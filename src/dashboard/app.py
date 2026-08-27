@@ -46,6 +46,26 @@ import streamlit.components.v1 as components
 
 st.set_page_config(page_title="MI Command Center — live", page_icon="\U0001F5A5️", layout="wide")
 
+# A real (if unglamorous) way for a button INSIDE the decorative dashboard's
+# iframe to trigger a real Python-side action: it navigates the REAL outer
+# page (window.top.location) to a URL with ?mi_action=... appended, which
+# Streamlit picks up as a genuine query param on the resulting page load --
+# the same channel the connect form already uses for jupyter_url/token.
+# This is a full-page-reload round trip, not a seamless one, but it's a real
+# working control physically inside that nav, not just documentation
+# pointing elsewhere -- and it needed no custom Streamlit Component/build
+# pipeline to get there. Processed and cleared immediately so a later
+# refresh doesn't replay the same action.
+_mi_action = st.query_params.get("mi_action")
+if _mi_action == "show_chrome":
+    st.session_state["mi_show_chrome"] = True
+elif _mi_action == "hide_chrome":
+    st.session_state["mi_show_chrome"] = False
+elif _mi_action == "forget":
+    st.query_params.clear()
+if _mi_action is not None and "mi_action" in st.query_params:
+    del st.query_params["mi_action"]
+
 # Hide Streamlit Cloud's own viewer chrome (Share/GitHub/menu toolbar up top,
 # the "Manage app" badge at the bottom) for regular viewers by default. This
 # st.markdown() call injects straight into the REAL outer page (unlike the
@@ -1189,16 +1209,20 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
 <section class="view" id="settings">
   <div class="lead">
     <h2><span class="g">Settings</span></h2>
-    <p>This nav is decorative HTML with no connection back to the Python server behind it, so a real, working toggle can't actually live inside it.</p>
+    <p>This nav is decorative HTML with no direct connection back to the Python server — but the two buttons below still genuinely work, by reloading the page with the change encoded in the URL, the same channel the connect form already uses.</p>
   </div>
   <div class="group">
     <div class="group-title"><span class="bar"></span><h3>Platform chrome &amp; connection</h3></div>
     <div class="card" style="max-width:520px">
       <div class="head">
-        <div><div class="t">⚙️ Settings, in the sidebar</div>
-        <div class="s">Show Streamlit Cloud toolbar &amp; footer, Forget connection</div></div>
+        <div><div class="t">⚙️ Toolbar &amp; footer, connection</div>
+        <div class="s">Real controls — reload the page to apply, same as the sidebar versions</div></div>
       </div>
-      <div class="tip">Open the sidebar on the left edge of the browser window (click the arrow, or it may already be open) — it's Streamlit's own native panel, so the toggle actually works. Turning it on reveals Streamlit's own native "⋮" menu up top, which has its <b>own</b> Settings dialog (wide mode, app theme, and more) separate from this custom page, plus the Share/GitHub links. Hidden by default for regular viewers.</div>
+      <div class="syncbox-row">
+        <button class="syncbtn" onclick="window.miTriggerAction('{{CHROME_ACTION}}')">{{CHROME_BTN_LABEL}}</button>
+        <button class="syncbtn" onclick="if(confirm('Forget this connection and disconnect?')) window.miTriggerAction('forget')">Forget connection</button>
+      </div>
+      <div class="tip">Same effect as the sidebar's Settings panel (open it on the left edge of the browser to see them without a reload) — turning the toolbar on also reveals Streamlit's own native "⋮" menu, which has its own Settings dialog (wide mode, app theme, and more) separate from this custom page.</div>
     </div>
     <div class="card" style="max-width:520px;margin-top:14px">
       <div class="head">
@@ -1311,6 +1335,22 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
     clearTimeout(toastTimer);
     toastTimer = setTimeout(function(){ toast.classList.remove('show'); }, 6500);
   }
+
+  // Real, working control physically inside this decorative nav, without a
+  // custom Streamlit Component build: navigates the REAL outer page
+  // (window.top, same-origin) to a URL with ?mi_action=... appended --
+  // Python reads and clears that param on the resulting page load, the same
+  // channel the connect form already uses for jupyter_url/token. A full
+  // reload, not a seamless partial update, by deliberate choice -- this
+  // needed no new build tooling in exchange for that one trade-off.
+  window.miTriggerAction = function(action){
+    try{
+      var url = new URL(window.top.location.href);
+      url.searchParams.set('mi_action', action);
+      window.top.location.href = url.toString();
+    }catch(e){ showToast('Could not apply that from here — try the Settings panel in the sidebar instead.'); }
+  };
+
   document.getElementById('gpuProviders').addEventListener('click', function(){
     showToast('Kaggle is the only backend actually wired up right now — AWS/Azure/GCP are shown for the roadmap, not connected. Kaggle also has no API to start or stop a session remotely; go start/stop it on kaggle.com directly, then reconnect here with the fresh tunnel URL/token.');
   });
@@ -1340,6 +1380,9 @@ html = html.replace("{{TORCH_VERSION}}", esc(torch_version))
 html = html.replace("{{CUDA_AVAILABLE}}", "True" if online else "False")
 html = html.replace("{{COMPUTE_CAP}}", esc(compute_cap))
 html = html.replace("{{SYNC_HTML}}", sync_html)
+_chrome_shown = st.session_state.get("mi_show_chrome", False)
+html = html.replace("{{CHROME_ACTION}}", "hide_chrome" if _chrome_shown else "show_chrome")
+html = html.replace("{{CHROME_BTN_LABEL}}", "Hide Streamlit Cloud toolbar & footer" if _chrome_shown else "Show Streamlit Cloud toolbar & footer")
 
 components.html(html, height=980, scrolling=False)
 
