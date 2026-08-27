@@ -424,7 +424,7 @@ BOND_SYSTEM_PROMPT = (
     "tool."
 )
 
-def bond_generate(prompt, model_label, max_new_tokens=140):
+def bond_generate(prompt, model_label, max_new_tokens=90):
     if model_label not in BOND_MODELS:
         return f"[{model_label} isn't loaded on this kernel]"
     tok, mod = BOND_MODELS[model_label]
