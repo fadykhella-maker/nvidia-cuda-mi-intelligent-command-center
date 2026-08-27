@@ -424,7 +424,7 @@ BOND_SYSTEM_PROMPT = (
     "tool."
 )
 
-def bond_generate(prompt, model_label, max_new_tokens=220):
+def bond_generate(prompt, model_label, max_new_tokens=140):
     if model_label not in BOND_MODELS:
         return f"[{model_label} isn't loaded on this kernel]"
     tok, mod = BOND_MODELS[model_label]
@@ -545,7 +545,13 @@ with st.sidebar:
     st.checkbox(
         "Show Streamlit Cloud toolbar & footer",
         key="mi_show_chrome",
-        help='Share / GitHub / menu up top, the "Manage app" badge at the bottom. Hidden by default for regular viewers.',
+        help=(
+            'Reveals Streamlit\'s own native "⋮" menu up top (which has its own '
+            "Settings dialog — wide mode, app theme, and more, separate from "
+            'this custom dashboard), the Share/GitHub links, and the "Manage '
+            'app" badge (owner-only regardless of this toggle). Hidden by '
+            "default for regular viewers."
+        ),
     )
     if st.button("Forget connection"):
         st.query_params.clear()
@@ -1192,7 +1198,7 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
         <div><div class="t">⚙️ Settings, in the sidebar</div>
         <div class="s">Show Streamlit Cloud toolbar &amp; footer, Forget connection</div></div>
       </div>
-      <div class="tip">Open the sidebar on the left edge of the browser window (click the arrow, or it may already be open) — it's Streamlit's own native panel, so the toggle actually works. Hidden by default for regular viewers.</div>
+      <div class="tip">Open the sidebar on the left edge of the browser window (click the arrow, or it may already be open) — it's Streamlit's own native panel, so the toggle actually works. Turning it on reveals Streamlit's own native "⋮" menu up top, which has its <b>own</b> Settings dialog (wide mode, app theme, and more) separate from this custom page, plus the Share/GitHub links. Hidden by default for regular viewers.</div>
     </div>
     <div class="card" style="max-width:520px;margin-top:14px">
       <div class="head">
@@ -1454,8 +1460,16 @@ def bond_autoload_fragment():
     st.session_state["bond_autoload_done"] = True
 
 
-@st.fragment
+@st.fragment(run_every=2)
 def bond_widget_fragment():
+    # run_every=2 here (added so the chat input's disabled/placeholder state
+    # below updates live once the background autoloader finishes, without
+    # requiring the user to click anything first) is safe from the same
+    # "first tick blocks the whole page" trap bond_autoload_fragment hit --
+    # unlike that one, this fragment's own body never does slow blocking
+    # work on a periodic tick; the only slow path (run_on_kernel when
+    # actually sending a message) only runs in direct response to the
+    # user's own click, same as before.
     with st.container(key="bond_fab"):
         if st.button("B1", key="bond_toggle_btn", help="Bond 001"):
             st.session_state["bond_panel_open"] = not st.session_state.get("bond_panel_open", False)
@@ -1475,6 +1489,7 @@ def bond_widget_fragment():
         # -- no per-model status text shown here by design, it's just noise
         # once loading is silent and automatic. A failed load is still worth
         # surfacing since it's actionable (retry button).
+        model_ready = selected in st.session_state.get("bond_loaded_models", [])
         failed_key = f"bond_load_failed_{selected}"
         if st.session_state.get(failed_key):
             st.caption(f"⚠ {selected} failed to load: {st.session_state[failed_key]}")
@@ -1503,7 +1518,16 @@ def bond_widget_fragment():
         # st.chat_input submits on Enter like a normal chat, no separate
         # Send button/click check needed (unlike st.text_input, which only
         # commits its value on Enter/blur but doesn't trigger any action).
-        fmsg = st.chat_input("Message Bond 001…", key="bond_float_input")
+        # Disabled with a plain "warming up" placeholder while the selected
+        # model isn't ready yet -- clearer than letting someone type into a
+        # chat that can't actually reply yet, without showing Kaggle-specific
+        # loading jargon. The run_every=2 above keeps this state current
+        # without needing a click.
+        fmsg = st.chat_input(
+            "Message Bond 001…" if model_ready else "Bond is warming up…",
+            key="bond_float_input",
+            disabled=not model_ready,
+        )
 
         if fmsg:
             st.session_state.setdefault("bond_messages", []).append({"role": "user", "content": fmsg})
