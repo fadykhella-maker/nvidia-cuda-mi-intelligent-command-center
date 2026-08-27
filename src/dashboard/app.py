@@ -1082,17 +1082,45 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
     try{ localStorage.setItem('mi-cc-theme', next); }catch(e){}
   });
 
-  // Streamlit Cloud's own toolbar/footer live in the OUTER real page, not
-  // this iframe -- so unlike the theme toggle above (which only needs this
-  // iframe's own document), this needs window.top (same-origin: this
-  // dashboard IS the Streamlit app, just rendered via components.html).
+  // Streamlit Cloud's own toolbar/footer/viewer-badge live in the OUTER
+  // real page, not this iframe -- so unlike the theme toggle above (which
+  // only needs this iframe's own document), this needs window.top
+  // (same-origin: this dashboard IS the Streamlit app, just rendered via
+  // components.html). A pure CSS class toggle wasn't reliable here -- these
+  // elements can get re-rendered by Streamlit's own React runtime after the
+  // toggle fires, silently reverting to the CSS default. So this sets
+  // inline styles directly on whatever currently matches, AND re-asserts
+  // on an interval to survive later re-renders while "visible" is on.
   var chromeToggle = document.getElementById('chromeToggle');
   var chromeLabel = document.getElementById('chromeToggleLabel');
   var chromeDot = document.getElementById('chromeKnobDot');
-  function applyChromeVisible(visible){
+  var CHROME_SELECTORS = [
+    '[data-testid="stToolbar"]', '[data-testid="stStatusWidget"]',
+    '[data-testid="stDecoration"]', '[data-testid="stAppDeployButton"]',
+    '#MainMenu', 'footer', '[class*="viewerBadge"]'
+  ];
+  var chromeIntervalId = null;
+  function forceChromeState(visible){
     try{
-      window.top.document.body.classList.toggle('mi-show-chrome', !!visible);
+      var doc = window.top.document;
+      CHROME_SELECTORS.forEach(function(sel){
+        doc.querySelectorAll(sel).forEach(function(el){
+          if(visible){ el.style.removeProperty('display'); }
+          else{ el.style.setProperty('display', 'none', 'important'); }
+        });
+      });
+      doc.body.classList.toggle('mi-show-chrome', !!visible);
     }catch(e){}
+  }
+  function applyChromeVisible(visible){
+    forceChromeState(visible);
+    if(chromeIntervalId) clearInterval(chromeIntervalId);
+    if(visible){
+      // Keep re-asserting for a while so a later Streamlit re-render
+      // (which can recreate these nodes fresh, losing the inline style)
+      // doesn't silently put the chrome back to hidden.
+      chromeIntervalId = setInterval(function(){ forceChromeState(true); }, 1000);
+    }
     if(chromeToggle) chromeToggle.checked = !!visible;
     if(chromeLabel) chromeLabel.textContent = visible ? 'Visible' : 'Hidden (default)';
     if(chromeDot) chromeDot.parentElement.style.background = visible ? 'var(--nv)' : '';
@@ -1209,11 +1237,43 @@ def load_one_bond_model(label: str):
     return False, f"Load failed:\n\n{lout}"
 
 
-with st.container(key="bond_fab"):
-    if st.button("B1", key="bond_toggle_btn", help="Bond 001"):
-        st.session_state["bond_panel_open"] = not st.session_state.get("bond_panel_open", False)
+# --- Fragments below: st.fragment scopes both the rerun AND Streamlit's
+# whole-page dim/spinner overlay to just the fragment's own area, instead of
+# the entire script (which includes the slow, network-bound status check up
+# top). This is what actually fixes "clicking Bond takes time to pop up" and
+# "the whole page dims until it replies" -- those were the outer script's own
+# full rerun, not anything Bond-specific being slow.
 
-if st.session_state.get("bond_panel_open"):
+
+@st.fragment(run_every=2)
+def bond_autoload_fragment():
+    """Loads the default model in the background, automatically, once --
+    starting as soon as the dashboard has already rendered once (not
+    blocking the initial page paint), so it's ready by the time the user
+    opens Bond instead of only starting when they click it. Ticks every 2s
+    forever, but is a cheap no-op once the load has been attempted."""
+    if st.session_state.get("bond_autoload_done"):
+        return
+    st.session_state["bond_autoload_done"] = True
+    if st.session_state.get("bond_selected_model") not in BOND_MODEL_IDS:
+        st.session_state["bond_selected_model"] = BOND_DEFAULT_MODEL
+    default = st.session_state["bond_selected_model"]
+    if default in st.session_state.get("bond_loaded_models", []):
+        return
+    lok, lerr = load_one_bond_model(default)
+    if not lok:
+        st.session_state[f"bond_load_failed_{default}"] = lerr
+
+
+@st.fragment
+def bond_widget_fragment():
+    with st.container(key="bond_fab"):
+        if st.button("B1", key="bond_toggle_btn", help="Bond 001"):
+            st.session_state["bond_panel_open"] = not st.session_state.get("bond_panel_open", False)
+
+    if not st.session_state.get("bond_panel_open"):
+        return
+
     with st.container(key="bond_panel"):
         st.markdown("### Bond 001")
 
@@ -1233,10 +1293,12 @@ if st.session_state.get("bond_panel_open"):
             if st.button(f"Retry loading {selected}", key="bond_retry_load"):
                 st.session_state.pop(failed_key, None)
                 st.rerun()
+        elif selected == st.session_state.get("bond_selected_model") and not st.session_state.get("bond_autoload_done"):
+            st.caption(f"○ {selected} is loading in the background — ready shortly.")
         else:
-            # Load as soon as this model is picked/opened, not on the first
-            # Send -- by the time the user reaches the chat input, it's
-            # already ready ("click and go to chat, it uses it right away").
+            # A model other than the auto-loading default was picked -- load
+            # THIS one now, synchronously (fragment-scoped, so only this
+            # panel dims, not the whole page).
             lok, lerr = load_one_bond_model(selected)
             if lok:
                 st.rerun()
@@ -1259,6 +1321,7 @@ if st.session_state.get("bond_panel_open"):
                     st.session_state.pop(k, None)
                 st.session_state.pop("bond_kernel_id", None)
                 st.session_state.pop("bond_loaded_models", None)
+                st.session_state["bond_autoload_done"] = False
                 st.rerun()
 
         # st.chat_input submits on Enter like a normal chat, no separate
@@ -1289,3 +1352,7 @@ if st.session_state.get("bond_panel_open"):
                     "content": f"{selected} isn't loaded yet — check the status above the chat.",
                 })
             st.rerun()
+
+
+bond_autoload_fragment()
+bond_widget_fragment()
