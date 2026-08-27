@@ -2,8 +2,13 @@
 #
 # This merges two things that were separate until now:
 #   1. The rich multi-tab visual design from the claude.ai Artifact prototype
-#      (Overview / Topology / GPU / Models / Agents / Tokens / About + the
-#      Bond 001 floating panel) — copied verbatim from mi-command-center.html.
+#      (Overview / Topology / GPU / Models / Agents / Tokens / About) — copied
+#      from mi-command-center.html. (v3.1: the cosmetic floating Bond 001 "fab"
+#      button/panel was removed — it overlapped the real native Bond panel
+#      below the embedded dashboard; its model-picker content now lives in the
+#      Models tab instead. v3.2: Bond's native panel can now load a real model
+#      — Qwen2.5-7B-Instruct, 4-bit, on a kernel kept alive for the session —
+#      and generate real replies instead of just pinging the kernel.)
 #   2. The real, live Kaggle-kernel connection from the v2 vertical slice
 #      (connect-once-via-query-params, run_remote() over the Jupyter kernel
 #      wire protocol, no manual toggle anywhere).
@@ -117,6 +122,124 @@ def run_remote(code: str, timeout: int = 20):
             pass
 
     return ok, ("".join(output).strip() or "(no output)")
+
+
+def open_kernel():
+    """Create a new kernel and return its id WITHOUT deleting it — used for
+    the persistent Bond-model kernel, since a loaded model has to survive
+    across multiple Send messages (the ad-hoc run_remote() above creates and
+    destroys a fresh, empty kernel every single call, which is correct for a
+    quick nvidia-smi/ping check but would mean re-downloading and re-loading
+    the whole model on every message otherwise)."""
+    if not jupyter_url or not jupyter_token:
+        return None, "not connected"
+    base = jupyter_url.rstrip("/")
+    headers = {"Authorization": f"token {jupyter_token}"}
+    try:
+        r = requests.post(f"{base}/api/kernels", headers=headers, timeout=8)
+        r.raise_for_status()
+        return r.json()["id"], None
+    except Exception as e:
+        return None, f"Couldn't reach the Kaggle tunnel: {e}"
+
+
+def run_on_kernel(kernel_id: str, code: str, timeout: int = 60):
+    """Same Jupyter kernel wire protocol as run_remote(), but targets an
+    EXISTING kernel_id and never deletes it afterward, so whatever the code
+    defines (a loaded model, a tokenizer) stays in memory for the next call."""
+    if not jupyter_url or not jupyter_token:
+        return False, "not connected"
+
+    base = jupyter_url.rstrip("/")
+    ws_base = base.replace("https://", "wss://").replace("http://", "ws://")
+    ws_url = f"{ws_base}/api/kernels/{kernel_id}/channels?token={jupyter_token}"
+
+    msg_id = str(uuid.uuid4())
+    execute_request = {
+        "header": {
+            "msg_id": msg_id, "username": "mi-command-center", "session": str(uuid.uuid4()),
+            "msg_type": "execute_request", "version": "5.3",
+        },
+        "parent_header": {}, "metadata": {},
+        "content": {
+            "code": code, "silent": False, "store_history": False,
+            "user_expressions": {}, "allow_stdin": False, "stop_on_error": True,
+        },
+        "channel": "shell",
+    }
+
+    output = []
+    ok = True
+    try:
+        import websocket
+        ws = websocket.create_connection(ws_url, timeout=timeout)
+        ws.send(json.dumps(execute_request))
+        start = time.time()
+        while time.time() - start < timeout:
+            msg = json.loads(ws.recv())
+            if msg.get("parent_header", {}).get("msg_id") != msg_id:
+                continue
+            mtype = msg.get("msg_type") or msg.get("header", {}).get("msg_type")
+            content = msg.get("content", {})
+            if mtype == "stream":
+                output.append(content.get("text", ""))
+            elif mtype == "error":
+                ok = False
+                output.append("\n".join(content.get("traceback", [])))
+            elif mtype == "execute_reply":
+                if content.get("status") == "error":
+                    ok = False
+                break
+        ws.close()
+    except Exception as e:
+        return False, f"Kernel execution failed: {e}"
+
+    return ok, ("".join(output).strip() or "(no output)")
+
+
+def close_kernel(kernel_id: str):
+    if not (jupyter_url and jupyter_token and kernel_id):
+        return
+    base = jupyter_url.rstrip("/")
+    headers = {"Authorization": f"token {jupyter_token}"}
+    try:
+        requests.delete(f"{base}/api/kernels/{kernel_id}", headers=headers, timeout=8)
+    except Exception:
+        pass
+
+
+# Runs once, on demand (the "Load Bond's model" button below) — installs deps,
+# downloads Qwen2.5-7B-Instruct in 4-bit (fits comfortably in one T4's 16GB),
+# and defines bond_generate() in that kernel's persistent global namespace.
+# This is real weight-download + real GPU load time (a few minutes the first
+# time on a given Kaggle session), not a simulated "connecting..." delay.
+BOND_LOAD_CODE = r"""
+import sys, subprocess
+subprocess.run([sys.executable, "-m", "pip", "install", "-q",
+                "transformers", "accelerate", "bitsandbytes"], check=True)
+
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+
+MODEL_ID = "Qwen/Qwen2.5-7B-Instruct"
+_bnb = BitsAndBytesConfig(
+    load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16,
+    bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
+)
+BOND_TOKENIZER = AutoTokenizer.from_pretrained(MODEL_ID)
+BOND_MODEL = AutoModelForCausalLM.from_pretrained(MODEL_ID, quantization_config=_bnb, device_map="auto")
+BOND_MODEL_NAME = MODEL_ID
+
+def bond_generate(prompt, max_new_tokens=256):
+    messages = [{"role": "user", "content": prompt}]
+    text = BOND_TOKENIZER.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = BOND_TOKENIZER(text, return_tensors="pt").to(BOND_MODEL.device)
+    out = BOND_MODEL.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=True, temperature=0.7)
+    reply = BOND_TOKENIZER.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+    return reply.strip()
+
+print("BOND_READY:" + MODEL_ID)
+"""
 
 
 def esc(text: str) -> str:
@@ -379,40 +502,6 @@ header .right{margin-left:auto;display:flex;gap:10px;align-items:center;flex-wra
 figure{margin:0}
 figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:12px 14px 4px;line-height:1.6}
 .node-box{fill:var(--panel2, #121a16)}
-#fab{position:fixed;right:22px;bottom:22px;z-index:60;width:54px;height:54px;border-radius:50%;cursor:pointer;border:1px solid var(--line);
-  background:radial-gradient(circle at 32% 28%,var(--nv-hi),var(--nv) 60%);box-shadow:0 10px 26px -8px var(--nv-glow);display:grid;place-items:center}
-#fab svg{width:22px;height:22px;stroke:#0b1400;fill:none;stroke-width:2}
-#fabpanel{position:fixed;right:22px;bottom:86px;z-index:60;width:380px;max-width:calc(100vw - 44px);background:var(--panel);
-  border:1px solid var(--line);border-radius:14px;box-shadow:0 30px 70px -20px #000;display:none;flex-direction:column;
-  max-height:min(640px,calc(100vh - 130px))}
-#fabpanel.open{display:flex}
-.fab-head{display:flex;align-items:center;gap:10px;padding:13px 14px;border-bottom:1px solid var(--line);background:var(--panel2);flex:none}
-.fab-badge{width:30px;height:30px;border-radius:8px;flex:none;background:var(--nv-dim);border:1px solid var(--line);display:grid;place-items:center;
-  font-family:var(--mono);font-weight:700;font-size:11px;color:var(--nv-hi)}
-.fab-head .t{font-weight:600;font-size:13px}
-.fab-head .s{font-family:var(--mono);font-size:9.5px;color:var(--faint);text-transform:uppercase}
-.fab-head .x{margin-left:auto;cursor:pointer;color:var(--faint);background:none;border:none;font-size:16px}
-.fab-scroll{overflow-y:auto;padding:14px;flex:1}
-.fab-body{font-size:12px;color:var(--muted);line-height:1.6}
-.fab-body .stat{font-family:var(--mono);font-size:10.5px;color:var(--st-warn);margin-top:10px;padding:8px 10px;border:1px solid var(--line);
-  border-left:2px solid var(--st-warn);border-radius:6px;background:var(--panel2)}
-.modelpicker{margin-top:13px;display:flex;flex-direction:column;gap:7px}
-.modelrow{display:flex;align-items:center;gap:10px;padding:9px 10px;border:1px solid var(--line);border-radius:9px;background:var(--panel2);cursor:pointer}
-.modelrow.sel{border-color:var(--nv)}
-.modelrow .rb{width:14px;height:14px;border-radius:50%;border:2px solid var(--faint);flex:none}
-.modelrow.sel .rb{border-color:var(--nv);background:radial-gradient(circle,var(--nv) 42%,transparent 46%)}
-.modelrow .nm{font-weight:600;font-size:12px;color:var(--ink)}
-.modelrow .mt{font-family:var(--mono);font-size:10px;color:var(--faint);margin-top:1px}
-.modelrow .tag{margin-left:auto;font-family:var(--mono);font-size:9px;padding:2px 7px;border-radius:999px;border:1px solid var(--line);color:var(--faint);white-space:nowrap}
-.modelrow .tag.rec{color:var(--nv-hi);border-color:var(--nv)}
-.bond-stream{display:flex;flex-direction:column;gap:9px;margin-top:14px;padding-top:14px;border-top:1px solid var(--line-soft)}
-.bmsg{max-width:88%;font-size:12px;line-height:1.5;padding:8px 11px;border-radius:11px}
-.bmsg.me{align-self:flex-end;background:var(--nv-dim);color:var(--ink);border:1px solid var(--line)}
-.bmsg.sys{align-self:stretch;font-family:var(--mono);font-size:10px;color:var(--st-warn);background:var(--panel2);border:1px solid var(--line);border-left:2px solid var(--st-warn);border-radius:6px}
-.fab-input{display:flex;gap:8px;padding:11px 12px;border-top:1px solid var(--line);flex:none}
-.fab-input input{flex:1;background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:9px;padding:9px 11px;font-size:12.5px}
-.fab-input input:focus{border-color:var(--nv);outline:none}
-.fab-input button{width:36px;height:36px;border-radius:9px;border:none;cursor:pointer;background:linear-gradient(145deg,var(--nv-hi),var(--nv));color:#0b1400;font-size:14px}
 ::selection{background:var(--nv);color:#0b1400}
 .powerbtn{display:flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:999px;background:var(--panel);
   padding:6px 12px;cursor:pointer;font-family:var(--mono);font-size:10.5px;color:var(--muted);transition:border-color .15s}
@@ -705,6 +794,18 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
     <div class="group-title"><span class="bar"></span><h3>What this tab will show once live</h3></div>
     <div class="tip">Prompt/response pane, tokens-in, tokens-out, tokens/sec, latency, and GPU memory consumed per request — each pulled from a real generation call through the kernel bridge, not simulated.</div>
   </div>
+  <div class="group">
+    <div class="group-title"><span class="bar"></span><h3>Candidate models for Bond 001</h3><span class="note">once vLLM serving is wired — one loaded at a time</span></div>
+    <div class="grid">
+      <div class="card"><div class="head"><div class="badge">Q</div><div><div class="t">Qwen2.5-7B-Instruct</div><div class="s">7B · Alibaba · ungated · strong tool-use</div></div><span class="statepill warn"><span class="d"></span>recommended</span></div><div class="foot">Default pick — fast enough to conserve GPU-hours, strong at tool-calling for the agent layer</div></div>
+      <div class="card"><div class="head"><div class="badge">Φ</div><div><div class="t">Phi-3.5-mini-instruct</div><div class="s">3.8B · microsoft · ungated</div></div><span class="statepill idle"><span class="d"></span>fastest</span></div><div class="foot">Already queued for the first basic load-and-verify test</div></div>
+      <div class="card"><div class="head"><div class="badge">M</div><div><div class="t">Mistral-7B-Instruct-v0.3</div><div class="s">7B · ungated · function-calling</div></div><span class="statepill idle"><span class="d"></span>solid</span></div><div class="foot">Backup candidate — not yet tested</div></div>
+      <div class="card"><div class="head"><div class="badge">L</div><div><div class="t">Llama-3.1-8B-Instruct</div><div class="s">8B · Meta · gated — accept license on HF</div></div><span class="statepill idle"><span class="d"></span>popular</span></div><div class="foot">Requires accepting Meta's license on Hugging Face first</div></div>
+      <div class="card"><div class="head"><div class="badge">G</div><div><div class="t">Gemma-2-9b-it</div><div class="s">9B · Google · gated — accept license on HF</div></div><span class="statepill idle"><span class="d"></span>quality</span></div><div class="foot">Requires accepting Google's license on Hugging Face first</div></div>
+      <div class="card"><div class="head"><div class="badge">Z</div><div><div class="t">Zephyr-7b-beta</div><div class="s">7B · ungated · easy fallback</div></div><span class="statepill idle"><span class="d"></span>fallback</span></div><div class="foot">Easy fallback if the others hit friction</div></div>
+    </div>
+    <div class="tip">These six fit comfortably in 4-bit on 16GB of VRAM without burning through the weekly GPU-hour budget too fast. If serving with vLLM, only one is loaded at a time. The real, working Bond 001 ping (a genuine round trip through this exact Kaggle kernel) is the native panel below this dashboard — it's not yet wired to a served model.</div>
+  </div>
 </section>
 
 <section class="view" id="agents">
@@ -772,33 +873,6 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
 </main>
 
 <div class="toast" id="toast"></div>
-<button id="fab" aria-label="Open Bond 001"><svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 1 8 8"/><circle cx="9" cy="12" r="1"/><circle cx="13" cy="12" r="1"/><circle cx="17" cy="12" r="1"/></svg></button>
-<div id="fabpanel">
-  <div class="fab-head">
-    <div class="fab-badge">B1</div>
-    <div><div class="t">Bond 001</div><div class="s">agentic console · model not yet connected</div></div>
-    <button class="x" id="fabclose" aria-label="Close">×</button>
-  </div>
-  <div class="fab-scroll">
-    <div class="fab-body">
-      Bond 001 will route requests to the Orchestrator Agent once the agent layer + a served model exist. Pick which model it should run on the Kaggle T4s — these are six that fit comfortably in 4-bit on 16GB of VRAM without burning through the weekly GPU-hour budget too fast. The real, working Bond ping (live round trip through this exact kernel) is in the Streamlit panel below this dashboard — not yet wired into this floating panel directly.
-      <div class="modelpicker" id="modelPicker">
-        <div class="modelrow" data-model="Phi-3.5-mini-instruct"><span class="rb"></span><div><div class="nm">Phi-3.5-mini-instruct</div><div class="mt">3.8B · microsoft · ungated</div></div><span class="tag">fastest</span></div>
-        <div class="modelrow sel" data-model="Qwen2.5-7B-Instruct"><span class="rb"></span><div><div class="nm">Qwen2.5-7B-Instruct</div><div class="mt">7B · Alibaba · ungated · strong tool-use</div></div><span class="tag rec">recommended</span></div>
-        <div class="modelrow" data-model="Mistral-7B-Instruct-v0.3"><span class="rb"></span><div><div class="nm">Mistral-7B-Instruct-v0.3</div><div class="mt">7B · ungated · function-calling</div></div><span class="tag">solid</span></div>
-        <div class="modelrow" data-model="Llama-3.1-8B-Instruct"><span class="rb"></span><div><div class="nm">Llama-3.1-8B-Instruct</div><div class="mt">8B · Meta · gated — accept license on HF</div></div><span class="tag">popular</span></div>
-        <div class="modelrow" data-model="Gemma-2-9b-it"><span class="rb"></span><div><div class="nm">Gemma-2-9b-it</div><div class="mt">9B · Google · gated — accept license on HF</div></div><span class="tag">quality</span></div>
-        <div class="modelrow" data-model="Zephyr-7b-beta"><span class="rb"></span><div><div class="nm">Zephyr-7b-beta</div><div class="mt">7B · ungated · easy fallback</div></div><span class="tag">fallback</span></div>
-      </div>
-      <div class="stat" id="modelNote">If serving with vLLM: one model loaded at a time, not all six — <b>Qwen2.5-7B-Instruct</b> selected as the default pick for now (ungated, fast enough to conserve GPU-hours, strong at tool-calling for the agent layer). Phi-3-mini-4k-instruct is still the one already queued for the first basic load-and-verify test — separate from this pick.</div>
-      <div class="bond-stream" id="bondStream"></div>
-    </div>
-  </div>
-  <div class="fab-input">
-    <input type="text" id="bondInput" placeholder="Message Bond 001…" disabled>
-    <button id="bondSend" aria-label="Go to live Bond 001">↓</button>
-  </div>
-</div>
 
 <script>
 (function(){
@@ -812,10 +886,6 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
       document.getElementById(b.dataset.view).classList.add('active');
     });
   });
-  var fab = document.getElementById('fab'), panel = document.getElementById('fabpanel'), close = document.getElementById('fabclose');
-  fab.addEventListener('click', function(){ panel.classList.toggle('open'); });
-  close.addEventListener('click', function(){ panel.classList.remove('open'); });
-
   var themeBtn = document.getElementById('themeBtn');
   var root = document.documentElement;
   function applyTheme(t){
@@ -853,18 +923,6 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
     });
   }
 
-  document.getElementById('bondSend').addEventListener('click', function(){
-    try{ window.top.document.getElementById('bond-native-anchor').scrollIntoView({behavior:'smooth'}); }
-    catch(e){ showToast('Scroll down on the page — the real Bond 001 box is below this dashboard.'); }
-  });
-
-  var models = document.querySelectorAll('.modelrow');
-  models.forEach(function(m){
-    m.addEventListener('click', function(){
-      models.forEach(function(x){x.classList.remove('sel')});
-      m.classList.add('sel');
-    });
-  });
 })();
 </script>
 """
@@ -888,28 +946,75 @@ components.html(html, height=980, scrolling=False)
 
 # --- Native, proven Bond 001 panel (real round trip) — lives just below the
 # rich visual dashboard above, since it needs a genuine Streamlit round trip
-# that a JS-only floating panel inside an iframe can't do on its own yet.
+# that the JS-only dashboard iframe can't do on its own yet.
 st.markdown('<div id="bond-native-anchor"></div>', unsafe_allow_html=True)
 st.divider()
 st.subheader("Bond 001 — live (the real one)")
-st.caption(
-    "Not yet connected to a served model — loading Phi-3-mini / Qwen2.5-7B-Instruct is the next roadmap step. "
-    "What's real right now: sending a message pings the live Kaggle kernel and back, a genuine round trip "
-    "through this exact bridge. (The floating Bond panel in the dashboard above is visual/cosmetic for now — "
-    "this box below is the one that actually reaches the kernel.)"
-)
+
+model_loaded = bool(st.session_state.get("bond_kernel_id") and st.session_state.get("bond_model_name"))
+
+if model_loaded:
+    st.success(
+        f"Connected to **{st.session_state['bond_model_name']}**, loaded on this Kaggle kernel — "
+        "messages below are real generations, not a ping. This is scoped to this browser session: "
+        "if you refresh the page or Kaggle restarts, you'll need to load it again."
+    )
+    if st.button("Unload model / release kernel"):
+        close_kernel(st.session_state.get("bond_kernel_id"))
+        st.session_state.pop("bond_kernel_id", None)
+        st.session_state.pop("bond_model_name", None)
+        st.rerun()
+else:
+    st.caption(
+        "Not yet connected to a served model. Loading one takes a few minutes the first time this "
+        "Kaggle session does it (installing transformers/bitsandbytes, downloading ~5GB of weights, "
+        "loading in 4-bit onto one T4) — real time, not simulated. Until then, Send below just pings "
+        "the kernel so you can confirm the bridge itself works."
+    )
+    if st.button("Load Bond's model (Qwen2.5-7B-Instruct, ~2-3 min first time)"):
+        with st.spinner("Opening a dedicated Kaggle kernel for Bond..."):
+            kid, err = open_kernel()
+        if not kid:
+            st.error(f"Couldn't open a kernel: {err}")
+        else:
+            with st.spinner("Installing deps + downloading + loading Qwen2.5-7B-Instruct in 4-bit — this really can take a few minutes..."):
+                lok, lout = run_on_kernel(kid, BOND_LOAD_CODE, timeout=480)
+            if lok and "BOND_READY:" in lout:
+                st.session_state["bond_kernel_id"] = kid
+                st.session_state["bond_model_name"] = lout.split("BOND_READY:", 1)[1].strip()
+                st.rerun()
+            else:
+                close_kernel(kid)
+                st.error(f"Model load failed — nothing left running on the kernel:\n\n{lout}")
+
 msg = st.text_input("Message Bond 001")
 if st.button("Send"):
-    with st.spinner("Reaching the live Kaggle kernel..."):
-        pok, pout = run_remote(
-            "import datetime, torch; "
-            "print('pong from Kaggle at', datetime.datetime.now(datetime.timezone.utc).isoformat(), "
-            "'| CUDA available:', torch.cuda.is_available())"
-        )
-    if pok:
-        st.chat_message("assistant").write(
-            f"Kernel reachable — {pout}\n\n"
-            f"(Your message — “{msg}” — wasn't sent to a language model; none is loaded yet.)"
-        )
+    if model_loaded:
+        with st.spinner("Generating on the live Kaggle kernel..."):
+            gok, gout = run_on_kernel(
+                st.session_state["bond_kernel_id"],
+                f"print(bond_generate({json.dumps(msg)}))",
+                timeout=90,
+            )
+        if gok:
+            st.chat_message("assistant").write(gout)
+        else:
+            st.chat_message("assistant").write(
+                f"The model kernel stopped responding — {gout}\n\n"
+                "It likely died on the Kaggle side. Click \"Unload model / release kernel\" then load it again."
+            )
     else:
-        st.chat_message("assistant").write(f"Couldn't reach the kernel: {pout}")
+        with st.spinner("Reaching the live Kaggle kernel..."):
+            pok, pout = run_remote(
+                "import datetime, torch; "
+                "print('pong from Kaggle at', datetime.datetime.now(datetime.timezone.utc).isoformat(), "
+                "'| CUDA available:', torch.cuda.is_available())"
+            )
+        if pok:
+            st.chat_message("assistant").write(
+                f"Kernel reachable — {pout}\n\n"
+                f"(Your message — “{msg}” — wasn't sent to a language model; none is loaded yet. "
+                "Click \"Load Bond's model\" above.)"
+            )
+        else:
+            st.chat_message("assistant").write(f"Couldn't reach the kernel: {pout}")
