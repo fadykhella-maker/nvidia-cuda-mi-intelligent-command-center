@@ -45,31 +45,33 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 st.set_page_config(page_title="MI Command Center — live", page_icon="\U0001F5A5️", layout="wide")
-st.markdown(
-    "<style>.block-container{padding:0 !important;max-width:100% !important} "
-    "iframe{border:none !important} "
-    # Hide Streamlit Cloud's own viewer chrome (Share/GitHub/menu toolbar up
-    # top, the "Manage app" badge at the bottom) for regular viewers by
-    # default. The dashboard's own Settings tab can flip `mi-show-chrome` on
-    # <body> (via the same cross-frame + localStorage pattern already used
-    # for the dark/light theme toggle) to bring it back when actually needed.
-    # stHeader is the CONTAINER the toolbar sits in -- hiding the toolbar
-    # button itself left the header's own reserved height/padding behind
-    # as blank space at the top. Collapse the container, not just its
-    # contents.
-    "body:not(.mi-show-chrome) [data-testid='stHeader']{height:0 !important;"
-    "min-height:0 !important;padding:0 !important;margin:0 !important} "
-    "body:not(.mi-show-chrome) [data-testid='stToolbar'], "
-    "body:not(.mi-show-chrome) [data-testid='stStatusWidget'], "
-    "body:not(.mi-show-chrome) [data-testid='stDecoration'], "
-    "body:not(.mi-show-chrome) [data-testid='stAppDeployButton'], "
-    "body:not(.mi-show-chrome) [class*='viewerBadge'], "
-    "body:not(.mi-show-chrome) a[href*='streamlit.io'], "
-    "body:not(.mi-show-chrome) #MainMenu, "
-    "body:not(.mi-show-chrome) footer "
-    "{display:none !important}</style>",
-    unsafe_allow_html=True,
-)
+
+# Hide Streamlit Cloud's own viewer chrome (Share/GitHub/menu toolbar up top,
+# the "Manage app" badge at the bottom) for regular viewers by default. This
+# st.markdown() call injects straight into the REAL outer page (unlike the
+# dashboard body below, which renders inside components.html()'s iframe) --
+# so this is decided in plain Python from real session_state, no cross-frame
+# JS/localStorage bridge needed at all. The Settings expander below sets
+# mi_show_chrome via a real checkbox to bring the chrome back on request.
+# stHeader is the CONTAINER the toolbar sits in -- hiding the toolbar button
+# itself left the header's own reserved height/padding behind as blank space
+# at the top, so the container itself is collapsed too, not just its contents.
+_chrome_css = ".block-container{padding:0 !important;max-width:100% !important} iframe{border:none !important}"
+if not st.session_state.get("mi_show_chrome", False):
+    _chrome_css += (
+        " [data-testid='stHeader']{height:0 !important;min-height:0 !important;"
+        "padding:0 !important;margin:0 !important}"
+        " [data-testid='stToolbar'],"
+        " [data-testid='stStatusWidget'],"
+        " [data-testid='stDecoration'],"
+        " [data-testid='stAppDeployButton'],"
+        " [class*='viewerBadge'],"
+        " a[href*='streamlit.io'],"
+        " #MainMenu,"
+        " footer"
+        " {display:none !important}"
+    )
+st.markdown(f"<style>{_chrome_css}</style>", unsafe_allow_html=True)
 
 # --- Connection state: read from the URL's query params, not session_state,
 # so a page REFRESH (not just a rerun) keeps it and re-checks automatically.
@@ -359,7 +361,7 @@ try:
 except Exception as _e:
     print("BOND_FAILED:" + _label + "=" + str(_e)[:200])
 
-def bond_generate(prompt, model_label, max_new_tokens=256):
+def bond_generate(prompt, model_label, max_new_tokens=160):
     if model_label not in BOND_MODELS:
         return f"[{{model_label}} isn't loaded on this kernel]"
     tok, mod = BOND_MODELS[model_label]
@@ -403,8 +405,18 @@ if not connected:
     st.stop()
 
 # --- Connected: run the REAL check on every load/refresh, no button needed. -
-top = st.columns([6, 1])
-with top[1]:
+# A real Settings control -- the dashboard body below renders inside
+# components.html()'s iframe, which is pure static HTML/JS with no
+# connection back to this Python process at all, so a truly *working*
+# toggle can't live inside that fancy left nav no matter how it's wired.
+# This lives in the real outer page instead, right where a viewer will
+# actually find it.
+with st.expander("⚙️ Settings", expanded=False):
+    st.checkbox(
+        "Show Streamlit Cloud toolbar & footer",
+        key="mi_show_chrome",
+        help='Share / GitHub / menu up top, the "Manage app" badge at the bottom. Hidden by default for regular viewers.',
+    )
     if st.button("Forget connection"):
         st.query_params.clear()
         st.rerun()
@@ -573,7 +585,9 @@ nav.rail{background:linear-gradient(180deg,#080b09,#030403);border-right:1px sol
 main{overflow:hidden;display:flex;flex-direction:column;min-width:0}
 header.top{height:62px;flex:none;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:16px;
   padding:0 clamp(16px,3vw,36px);background:linear-gradient(90deg,var(--panel),transparent)}
-header .titles{display:flex;flex-direction:column;gap:1px}
+header .brand{display:flex;align-items:center;gap:10px}
+header .brand svg{width:26px;height:26px;flex:none}
+header .titles{display:flex;flex-direction:column;gap:1px;justify-content:center}
 header h1{font-size:15.5px;font-weight:650;letter-spacing:.01em}
 header h1 .g{color:var(--nv-hi)}
 header .crumb{font-family:var(--mono);font-size:9.5px;color:var(--faint);letter-spacing:.14em;text-transform:uppercase}
@@ -694,9 +708,15 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
 
 <main>
 <header class="top">
-  <div class="titles">
-    <h1>MI <span class="g">Command Center</span></h1>
-    <div class="crumb">nvidia · cuda · agentic gpu infrastructure</div>
+  <div class="brand">
+    <svg viewBox="0 0 44 44" role="img" aria-label="MI Command Center mark">
+      <polygon points="22,3 39,13 39,31 22,41 5,31 5,13" fill="var(--nv-dim)" stroke="var(--nv)" stroke-width="1.4"/>
+      <path d="M13 27 L18 16 L22 24 L26 15 L31 27" fill="none" stroke="var(--nv-hi)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <div class="titles">
+      <h1>MI <span class="g">Command Center</span></h1>
+      <div class="crumb">nvidia · cuda · agentic gpu infrastructure</div>
+    </div>
   </div>
   <div class="right">
     <span class="pill {{PILL_CLASS}}" id="headerGpuPill"><span class="dot"></span><span id="headerGpuText">GPU BACKEND {{STATUS_TEXT}}</span></span>
@@ -1027,21 +1047,16 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
 <section class="view" id="settings">
   <div class="lead">
     <h2><span class="g">Settings</span></h2>
-    <p>Local to this browser (saved via localStorage, not shared across viewers).</p>
+    <p>This nav is decorative HTML with no connection back to the Python server behind it, so a real, working toggle can't actually live inside it.</p>
   </div>
   <div class="group">
-    <div class="group-title"><span class="bar"></span><h3>Platform chrome</h3></div>
+    <div class="group-title"><span class="bar"></span><h3>Platform chrome &amp; connection</h3></div>
     <div class="card" style="max-width:520px">
       <div class="head">
-        <div><div class="t">Show Streamlit Cloud toolbar &amp; footer</div>
-        <div class="s">Share / GitHub / menu up top, "Manage app" badge at the bottom</div></div>
+        <div><div class="t">⚙️ Settings panel, above the dashboard</div>
+        <div class="s">Show Streamlit Cloud toolbar &amp; footer, Forget connection</div></div>
       </div>
-      <label class="themebtn" style="cursor:pointer;width:fit-content">
-        <span class="knob"><i id="chromeKnobDot"></i></span>
-        <span id="chromeToggleLabel">Hidden (default)</span>
-        <input type="checkbox" id="chromeToggle" style="display:none">
-      </label>
-      <div class="tip">Hidden by default for regular viewers. Turn this on if you need the Share link, the GitHub repo link, or app management controls.</div>
+      <div class="tip">Open the real <b>⚙️ Settings</b> expander directly above this dashboard (scroll up) — it's a genuine Streamlit control, so the toggle and the "Manage app" badge it reveals actually work. Hidden by default for regular viewers.</div>
     </div>
   </div>
 </section>
@@ -1087,60 +1102,6 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
     applyTheme(next);
     try{ localStorage.setItem('mi-cc-theme', next); }catch(e){}
   });
-
-  // Streamlit Cloud's own toolbar/footer/viewer-badge live in the OUTER
-  // real page, not this iframe -- so unlike the theme toggle above (which
-  // only needs this iframe's own document), this needs window.top
-  // (same-origin: this dashboard IS the Streamlit app, just rendered via
-  // components.html). A pure CSS class toggle wasn't reliable here -- these
-  // elements can get re-rendered by Streamlit's own React runtime after the
-  // toggle fires, silently reverting to the CSS default. So this sets
-  // inline styles directly on whatever currently matches, AND re-asserts
-  // on an interval to survive later re-renders while "visible" is on.
-  var chromeToggle = document.getElementById('chromeToggle');
-  var chromeLabel = document.getElementById('chromeToggleLabel');
-  var chromeDot = document.getElementById('chromeKnobDot');
-  var CHROME_SELECTORS = [
-    '[data-testid="stHeader"]', '[data-testid="stToolbar"]', '[data-testid="stStatusWidget"]',
-    '[data-testid="stDecoration"]', '[data-testid="stAppDeployButton"]',
-    '#MainMenu', 'footer', '[class*="viewerBadge"]'
-  ];
-  var chromeIntervalId = null;
-  function forceChromeState(visible){
-    try{
-      var doc = window.top.document;
-      CHROME_SELECTORS.forEach(function(sel){
-        doc.querySelectorAll(sel).forEach(function(el){
-          if(visible){ el.style.removeProperty('display'); }
-          else{ el.style.setProperty('display', 'none', 'important'); }
-        });
-      });
-      doc.body.classList.toggle('mi-show-chrome', !!visible);
-    }catch(e){}
-  }
-  function applyChromeVisible(visible){
-    forceChromeState(visible);
-    if(chromeIntervalId) clearInterval(chromeIntervalId);
-    if(visible){
-      // Keep re-asserting for a while so a later Streamlit re-render
-      // (which can recreate these nodes fresh, losing the inline style)
-      // doesn't silently put the chrome back to hidden.
-      chromeIntervalId = setInterval(function(){ forceChromeState(true); }, 1000);
-    }
-    if(chromeToggle) chromeToggle.checked = !!visible;
-    if(chromeLabel) chromeLabel.textContent = visible ? 'Visible' : 'Hidden (default)';
-    if(chromeDot) chromeDot.parentElement.style.background = visible ? 'var(--nv)' : '';
-    if(chromeDot) chromeDot.style.left = visible ? '13px' : '2px';
-  }
-  var chromeSaved = null;
-  try{ chromeSaved = window.top.localStorage.getItem('mi-show-chrome'); }catch(e){}
-  applyChromeVisible(chromeSaved === '1');
-  if(chromeToggle){
-    chromeToggle.addEventListener('change', function(){
-      applyChromeVisible(chromeToggle.checked);
-      try{ window.top.localStorage.setItem('mi-show-chrome', chromeToggle.checked ? '1' : '0'); }catch(e){}
-    });
-  }
 
   var toast = document.getElementById('toast'); var toastTimer = null;
   function showToast(html){
@@ -1253,31 +1214,39 @@ def load_one_bond_model(label: str):
 
 @st.fragment(run_every=2)
 def bond_autoload_fragment():
-    """Loads the default model in the background, automatically, once.
+    """Loads ALL FOUR candidate models in the background, automatically,
+    default-model first -- so switching the picker to any of the other
+    three is instant instead of triggering a fresh multi-minute on-demand
+    load (that on-demand path used to fire whenever someone picked a
+    model other than the auto-loading default, which is exactly what
+    "Qwen2.5-7B-Instruct... still loading" was).
 
     IMPORTANT: st.fragment(run_every=...) runs its body INLINE, blocking,
     on the very first call -- it only becomes an independently-scheduled
     tick starting from the *second* call onward. Doing the real (multi-
-    minute) model load on that first call would block the entire initial
+    minute) model loads on that first call would block the entire initial
     page render, including Bond's own button -- exactly the 'agent
     disappeared' symptom. So the first tick only sets a flag and returns
-    immediately (page finishes rendering normally); the load itself only
-    starts on the second tick, ~2s later, by which point this fragment's
-    reruns are already isolated from the rest of the page."""
+    immediately (page finishes rendering normally); the loads themselves
+    only start on the second tick, ~2s later, by which point this
+    fragment's reruns are already isolated from the rest of the page."""
     if st.session_state.get("bond_autoload_done"):
         return
     if not st.session_state.get("bond_autoload_started"):
         st.session_state["bond_autoload_started"] = True
         return
-    st.session_state["bond_autoload_done"] = True
     if st.session_state.get("bond_selected_model") not in BOND_MODEL_IDS:
         st.session_state["bond_selected_model"] = BOND_DEFAULT_MODEL
-    default = st.session_state["bond_selected_model"]
-    if default in st.session_state.get("bond_loaded_models", []):
-        return
-    lok, lerr = load_one_bond_model(default)
-    if not lok:
-        st.session_state[f"bond_load_failed_{default}"] = lerr
+    order = [BOND_DEFAULT_MODEL] + [m for m in BOND_MODEL_IDS if m != BOND_DEFAULT_MODEL]
+    for label in order:
+        if label in st.session_state.get("bond_loaded_models", []):
+            continue
+        if st.session_state.get(f"bond_load_failed_{label}"):
+            continue
+        lok, lerr = load_one_bond_model(label)
+        if not lok:
+            st.session_state[f"bond_load_failed_{label}"] = lerr
+    st.session_state["bond_autoload_done"] = True
 
 
 @st.fragment
@@ -1297,28 +1266,15 @@ def bond_widget_fragment():
             st.session_state["bond_selected_model"] = BOND_DEFAULT_MODEL
         selected = st.selectbox("Model", model_options, key="bond_selected_model")
 
-        loaded_models = st.session_state.get("bond_loaded_models", [])
-        model_ready = selected in loaded_models
+        # All four models autoload in the background (bond_autoload_fragment)
+        # -- no per-model status text shown here by design, it's just noise
+        # once loading is silent and automatic. A failed load is still worth
+        # surfacing since it's actionable (retry button).
         failed_key = f"bond_load_failed_{selected}"
-
-        if model_ready:
-            st.caption(f"● {selected} ready")
-        elif st.session_state.get(failed_key):
+        if st.session_state.get(failed_key):
             st.caption(f"⚠ {selected} failed to load: {st.session_state[failed_key]}")
             if st.button(f"Retry loading {selected}", key="bond_retry_load"):
                 st.session_state.pop(failed_key, None)
-                st.rerun()
-        elif selected == st.session_state.get("bond_selected_model") and not st.session_state.get("bond_autoload_done"):
-            st.caption(f"○ {selected} is loading in the background — ready shortly.")
-        else:
-            # A model other than the auto-loading default was picked -- load
-            # THIS one now, synchronously (fragment-scoped, so only this
-            # panel dims, not the whole page).
-            lok, lerr = load_one_bond_model(selected)
-            if lok:
-                st.rerun()
-            else:
-                st.session_state[failed_key] = lerr
                 st.rerun()
 
         if "bond_messages" not in st.session_state:
@@ -1364,7 +1320,7 @@ def bond_widget_fragment():
             else:
                 st.session_state["bond_messages"].append({
                     "role": "assistant",
-                    "content": f"{selected} isn't loaded yet — check the status above the chat.",
+                    "content": f"Still finishing setup for {selected} in the background — give it a little longer, then send that again.",
                 })
             st.rerun()
 
