@@ -53,6 +53,12 @@ st.markdown(
     # default. The dashboard's own Settings tab can flip `mi-show-chrome` on
     # <body> (via the same cross-frame + localStorage pattern already used
     # for the dark/light theme toggle) to bring it back when actually needed.
+    # stHeader is the CONTAINER the toolbar sits in -- hiding the toolbar
+    # button itself left the header's own reserved height/padding behind
+    # as blank space at the top. Collapse the container, not just its
+    # contents.
+    "body:not(.mi-show-chrome) [data-testid='stHeader']{height:0 !important;"
+    "min-height:0 !important;padding:0 !important;margin:0 !important} "
     "body:not(.mi-show-chrome) [data-testid='stToolbar'], "
     "body:not(.mi-show-chrome) [data-testid='stStatusWidget'], "
     "body:not(.mi-show-chrome) [data-testid='stDecoration'], "
@@ -1095,7 +1101,7 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
   var chromeLabel = document.getElementById('chromeToggleLabel');
   var chromeDot = document.getElementById('chromeKnobDot');
   var CHROME_SELECTORS = [
-    '[data-testid="stToolbar"]', '[data-testid="stStatusWidget"]',
+    '[data-testid="stHeader"]', '[data-testid="stToolbar"]', '[data-testid="stStatusWidget"]',
     '[data-testid="stDecoration"]', '[data-testid="stAppDeployButton"]',
     '#MainMenu', 'footer', '[class*="viewerBadge"]'
   ];
@@ -1247,12 +1253,21 @@ def load_one_bond_model(label: str):
 
 @st.fragment(run_every=2)
 def bond_autoload_fragment():
-    """Loads the default model in the background, automatically, once --
-    starting as soon as the dashboard has already rendered once (not
-    blocking the initial page paint), so it's ready by the time the user
-    opens Bond instead of only starting when they click it. Ticks every 2s
-    forever, but is a cheap no-op once the load has been attempted."""
+    """Loads the default model in the background, automatically, once.
+
+    IMPORTANT: st.fragment(run_every=...) runs its body INLINE, blocking,
+    on the very first call -- it only becomes an independently-scheduled
+    tick starting from the *second* call onward. Doing the real (multi-
+    minute) model load on that first call would block the entire initial
+    page render, including Bond's own button -- exactly the 'agent
+    disappeared' symptom. So the first tick only sets a flag and returns
+    immediately (page finishes rendering normally); the load itself only
+    starts on the second tick, ~2s later, by which point this fragment's
+    reruns are already isolated from the rest of the page."""
     if st.session_state.get("bond_autoload_done"):
+        return
+    if not st.session_state.get("bond_autoload_started"):
+        st.session_state["bond_autoload_started"] = True
         return
     st.session_state["bond_autoload_done"] = True
     if st.session_state.get("bond_selected_model") not in BOND_MODEL_IDS:
