@@ -360,17 +360,143 @@ try:
     print("BOND_READY:" + _label)
 except Exception as _e:
     print("BOND_FAILED:" + _label + "=" + str(_e)[:200])
+'''
 
-def bond_generate(prompt, model_label, max_new_tokens=160):
+
+def bond_tools_setup_code() -> str:
+    """Code sent ONCE per kernel, right after it's opened (before any model
+    load) -- defines Bond's web-search tool and the tool-calling
+    bond_generate() shared by all four models, so it isn't redefined (and
+    re-run its pip install) on every single model load.
+
+    web_search uses ddgs (DuckDuckGo search) -- free, keyless, no signup,
+    nothing to substitute at push time. Bond's own LLM decides when to call
+    it and writes the final answer from the raw result snippets; there's no
+    synthesized "answer" field like a paid search API would provide, which
+    is the deliberate trade-off for zero credentials/zero billing risk."""
+    return r'''
+import sys, subprocess, json, re
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-U", "ddgs"], check=True)
+
+def web_search(query: str) -> str:
+    """
+    Search the live internet for current information -- news, prices, facts,
+    anything that requires up-to-date knowledge beyond training data.
+
+    Args:
+        query: What to search for, as a natural search query.
+    """
+    from ddgs import DDGS
+    try:
+        results = DDGS().text(query, max_results=5)
+    except Exception as e:
+        return f"Search error: {e}"
+    if not results:
+        return f"No results found for: {query}"
+    parts = []
+    for item in results:
+        parts.append(f"- {item.get('title', '')} ({item.get('href', '')}): "
+                      f"{item.get('body', '')[:300]}")
+    return "\n".join(parts)
+
+BOND_TOOLS = [web_search]
+
+# Qwen's chat template natively understands apply_chat_template(tools=...)
+# and emits <tool_call>...</tool_call> on its own -- verified directly.
+# Phi-3.5-mini's template does NOT (verified directly: it just answered
+# "I don't have real-time access" instead of ever calling the tool). Rather
+# than depending on each of the four models' own template having built-in
+# tool-schema support, the exact tag format is taught directly in the
+# system prompt instead -- model-agnostic, works whether or not the
+# tokenizer's template itself understands `tools=`.
+BOND_SYSTEM_PROMPT = (
+    "You are Bond 001, a helpful assistant with access to one tool:\n\n"
+    "web_search(query: str) -- searches the live internet for current, "
+    "real-world information (news, prices, facts, anything needing "
+    "up-to-date data beyond your training).\n\n"
+    "To use it, respond with EXACTLY this and nothing else:\n"
+    '<tool_call>{"name": "web_search", "arguments": {"query": "..."}}</tool_call>\n\n'
+    "Use it whenever a question needs current, real-world, or "
+    "time-sensitive information you can't be certain of from memory -- "
+    "prices, news, scores, current events, specific facts you're not fully "
+    "sure of. Don't guess when you can look it up. For anything else (math, "
+    "general knowledge, conversation), answer directly without using the "
+    "tool."
+)
+
+def bond_generate(prompt, model_label, max_new_tokens=220):
     if model_label not in BOND_MODELS:
-        return f"[{{model_label}} isn't loaded on this kernel]"
+        return f"[{model_label} isn't loaded on this kernel]"
     tok, mod = BOND_MODELS[model_label]
-    messages = [{{"role": "user", "content": prompt}}]
-    text = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs = tok(text, return_tensors="pt").to(mod.device)
-    out = mod.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=True, temperature=0.7)
-    reply = tok.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
-    return reply.strip()
+    messages = [
+        {"role": "system", "content": BOND_SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
+
+    def _ask(msgs):
+        # Deliberately NOT passing tools=BOND_TOOLS here. Verified directly:
+        # combining tools= with a system message whose CONTENT contains
+        # literal {}'s (the <tool_call>{"name": ...} example in
+        # BOND_SYSTEM_PROMPT above) intermittently throws a Jinja
+        # UndefinedError inside transformers' render_jinja_template on this
+        # transformers version -- reproduced 4/4 times on Phi-3.5-mini, but
+        # NOT when the system prompt had no braces in it, and NOT when
+        # tools= was omitted. Qwen's own tool-use ability doesn't actually
+        # depend on the tools= kwarg's extra schema injection -- it's a
+        # strong enough instruction-follower to reach for the tool from the
+        # system prompt's taught format alone (this was verified live too),
+        # so dropping tools= entirely removes the buggy path without losing
+        # anything, uniformly across all four models.
+        text = tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+        inputs = tok(text, return_tensors="pt").to(mod.device)
+        out = mod.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=True, temperature=0.7)
+        return tok.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True).strip()
+
+    reply = _ask(messages)
+    for _ in range(2):
+        # Qwen reliably wraps its call in <tool_call>...</tool_call> as
+        # instructed. Phi-3.5-mini (verified directly) follows the JSON
+        # shape correctly but drops the wrapper tags entirely, emitting just
+        # the bare {"name": ..., "arguments": {...}} object -- so a second,
+        # tag-less pattern is tried as a fallback rather than requiring the
+        # tags, which would otherwise silently return that raw JSON as if it
+        # were Bond's final answer instead of ever calling the tool.
+        m = re.search(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", reply, re.DOTALL)
+        if not m:
+            m = re.search(r'(\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{.*?\}\s*\})', reply, re.DOTALL)
+        if not m:
+            break
+        try:
+            call = json.loads(m.group(1))
+        except Exception:
+            break
+        tool_fn = next((t for t in BOND_TOOLS if t.__name__ == call.get("name")), None)
+        if not tool_fn:
+            break
+        try:
+            result = str(tool_fn(**call.get("arguments", {})))
+        except Exception as _e:
+            result = f"Tool error: {_e}"
+        # Deliberately NOT using the OpenAI-style {"role": "assistant",
+        # "tool_calls": [...]} / {"role": "tool", ...} message shape here.
+        # Verified directly: Phi-3.5-mini's chat template has no real
+        # understanding of a "tool" role or a content-less "tool_calls"
+        # message (at best it errors on the missing content key, at worst it
+        # silently fails to treat the result as usable context and just
+        # re-emits the same tool call again instead of a final answer).
+        # Plain "user"/"assistant" messages are something every chat
+        # template, tool-aware or not, already knows how to render
+        # correctly -- so the tool round-trip is framed as an ordinary
+        # conversation turn instead of depending on tool-schema support.
+        messages.append({"role": "assistant", "content": reply})
+        messages.append({
+            "role": "user",
+            "content": f"Tool result for {call.get('name')}:\n{result}\n\n"
+                       "Now answer my original question using this information. "
+                       "Reply in plain language -- don't call the tool again.",
+        })
+        reply = _ask(messages)
+    return reply
 '''
 
 
@@ -1184,12 +1310,18 @@ def load_one_bond_model(label: str):
     the first one) and add it to bond_loaded_models on success. Returns
     (ok, error_message_or_None)."""
     kernel_id = st.session_state.get("bond_kernel_id")
+    is_new_kernel = not kernel_id
     if not kernel_id:
         with st.spinner("Opening a dedicated Kaggle kernel for Bond..."):
             kernel_id, err = open_kernel()
         if not kernel_id:
             return False, f"Couldn't open a kernel: {err}"
         st.session_state["bond_kernel_id"] = kernel_id
+    if is_new_kernel:
+        with st.spinner("Setting up Bond's web-search tool..."):
+            tools_ok, tools_out = run_on_kernel(kernel_id, bond_tools_setup_code(), timeout=120)
+        if not tools_ok:
+            return False, f"Couldn't set up Bond's tools: {tools_out}"
     with st.spinner(
         f"Loading {label} onto the Kaggle T4 (installing transformers/bitsandbytes, "
         "downloading weights, loading in 4-bit) — this can take a couple minutes the "
