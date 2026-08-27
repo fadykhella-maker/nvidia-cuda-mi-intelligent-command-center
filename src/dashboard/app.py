@@ -597,12 +597,12 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
         <div class="foot">full breakdown → GPU &amp; CUDA tab</div>
       </div>
       <div class="card">
-        <div class="head"><div class="badge">…</div><div><div class="t">Phi-3-mini inference</div><div class="s">4-bit, bitsandbytes</div></div><span class="statepill warn"><span class="d"></span>pending</span></div>
+        <div class="head"><div class="badge">Q</div><div><div class="t">Qwen2.5-7B-Instruct inference</div><div class="s">4-bit, bitsandbytes</div></div><span class="statepill good"><span class="d"></span>on demand</span></div>
         <div class="rows">
-          <div class="row">install step<b>queued</b></div>
-          <div class="row">load step<b>queued</b></div>
+          <div class="row">install + load<b>on first Bond message</b></div>
+          <div class="row">typical first-load time<b>~2-3 min</b></div>
         </div>
-        <div class="foot">next thing being wired up — Bond 001 below still just pings the kernel, no model loaded</div>
+        <div class="foot">click the Bond 001 button (bottom-right) and just start typing — it loads itself the first time</div>
       </div>
       <div class="card">
         <div class="head"><div class="badge">…</div><div><div class="t">Agent orchestration</div><div class="s">6 planned agents</div></div><span class="statepill idle"><span class="d"></span>idle</span></div>
@@ -944,77 +944,113 @@ html = html.replace("{{SYNC_HTML}}", sync_html)
 
 components.html(html, height=980, scrolling=False)
 
-# --- Native, proven Bond 001 panel (real round trip) — lives just below the
-# rich visual dashboard above, since it needs a genuine Streamlit round trip
-# that the JS-only dashboard iframe can't do on its own yet.
-st.markdown('<div id="bond-native-anchor"></div>', unsafe_allow_html=True)
-st.divider()
-st.subheader("Bond 001 — live (the real one)")
+# --- Floating Bond 001 widget — a real, native Streamlit chat, not the old
+# JS-only cosmetic panel. It's built from plain st widgets (button, text_input,
+# chat_message) wrapped in keyed containers that CSS pins to the *real* page
+# viewport with position:fixed. That's the key difference from the removed
+# v3 panel: that one lived inside the st.components.v1.html() iframe, so
+# "fixed" meant fixed to the IFRAME's small box, which is what caused it to
+# sit on top of the content right below it. This one is outside the iframe
+# entirely, fixed to the actual browser window, so it floats over whatever
+# is currently scrolled underneath it — the normal, correct behavior for a
+# floating chat button — and it can call Python directly (open a kernel,
+# load the model, generate) with no JS bridging needed.
+st.markdown(
+    """
+    <style>
+    div.st-key-bond_fab { position: fixed; right: 22px; bottom: 22px; z-index: 999998; width: 56px; }
+    div.st-key-bond_fab button {
+        width: 56px; height: 56px; border-radius: 50% !important;
+        background: radial-gradient(circle at 32% 28%, #a6e000, #76b900 60%) !important;
+        border: 1px solid #223129 !important; color: #0b1400 !important;
+        font-weight: 800 !important; font-size: 15px !important;
+        box-shadow: 0 10px 26px -8px rgba(118,185,0,.55);
+    }
+    div.st-key-bond_panel {
+        position: fixed !important; right: 22px; bottom: 90px; z-index: 999999;
+        width: 380px; max-width: calc(100vw - 44px);
+        max-height: min(640px, calc(100vh - 130px)); overflow-y: auto;
+        background: #0d1310; border: 1px solid #223129; border-radius: 14px;
+        box-shadow: 0 30px 70px -20px #000; padding: 16px 18px;
+    }
+    div.st-key-bond_panel h3, div.st-key-bond_panel p, div.st-key-bond_panel label,
+    div.st-key-bond_panel span, div.st-key-bond_panel div { color: #edf2ee; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-model_loaded = bool(st.session_state.get("bond_kernel_id") and st.session_state.get("bond_model_name"))
 
-if model_loaded:
-    st.success(
-        f"Connected to **{st.session_state['bond_model_name']}**, loaded on this Kaggle kernel — "
-        "messages below are real generations, not a ping. This is scoped to this browser session: "
-        "if you refresh the page or Kaggle restarts, you'll need to load it again."
-    )
-    if st.button("Unload model / release kernel"):
-        close_kernel(st.session_state.get("bond_kernel_id"))
-        st.session_state.pop("bond_kernel_id", None)
-        st.session_state.pop("bond_model_name", None)
-        st.rerun()
-else:
-    st.caption(
-        "Not yet connected to a served model. Loading one takes a few minutes the first time this "
-        "Kaggle session does it (installing transformers/bitsandbytes, downloading ~5GB of weights, "
-        "loading in 4-bit onto one T4) — real time, not simulated. Until then, Send below just pings "
-        "the kernel so you can confirm the bridge itself works."
-    )
-    if st.button("Load Bond's model (Qwen2.5-7B-Instruct, ~2-3 min first time)"):
-        with st.spinner("Opening a dedicated Kaggle kernel for Bond..."):
-            kid, err = open_kernel()
-        if not kid:
-            st.error(f"Couldn't open a kernel: {err}")
+def load_bond_model():
+    """Open a persistent kernel and load Qwen2.5-7B-Instruct onto it. Updates
+    session_state on success. Returns (ok, error_message_or_None)."""
+    with st.spinner("Opening a dedicated Kaggle kernel for Bond..."):
+        kid, err = open_kernel()
+    if not kid:
+        return False, f"Couldn't open a kernel: {err}"
+    with st.spinner(
+        "Loading Qwen2.5-7B-Instruct onto the Kaggle T4 (installing transformers/bitsandbytes, "
+        "downloading ~5GB of weights, loading in 4-bit) — this really can take a few minutes the "
+        "first time this Kaggle session does it..."
+    ):
+        lok, lout = run_on_kernel(kid, BOND_LOAD_CODE, timeout=480)
+    if lok and "BOND_READY:" in lout:
+        st.session_state["bond_kernel_id"] = kid
+        st.session_state["bond_model_name"] = lout.split("BOND_READY:", 1)[1].strip()
+        return True, None
+    close_kernel(kid)
+    return False, f"Model load failed — nothing left running on the kernel:\n\n{lout}"
+
+
+with st.container(key="bond_fab"):
+    if st.button("B1", key="bond_toggle_btn", help="Bond 001"):
+        st.session_state["bond_panel_open"] = not st.session_state.get("bond_panel_open", False)
+
+if st.session_state.get("bond_panel_open"):
+    with st.container(key="bond_panel"):
+        st.markdown("### Bond 001")
+        model_loaded = bool(st.session_state.get("bond_kernel_id") and st.session_state.get("bond_model_name"))
+
+        if model_loaded:
+            st.caption(f"● connected — {st.session_state['bond_model_name']}")
         else:
-            with st.spinner("Installing deps + downloading + loading Qwen2.5-7B-Instruct in 4-bit — this really can take a few minutes..."):
-                lok, lout = run_on_kernel(kid, BOND_LOAD_CODE, timeout=480)
-            if lok and "BOND_READY:" in lout:
-                st.session_state["bond_kernel_id"] = kid
-                st.session_state["bond_model_name"] = lout.split("BOND_READY:", 1)[1].strip()
+            st.caption("○ no model loaded — your first message loads it (installs deps, downloads "
+                       "~5GB, ~2-3 min), then answers that same message.")
+
+        for m in st.session_state.get("bond_messages", []):
+            st.chat_message(m["role"]).write(m["content"])
+
+        fmsg = st.text_input("Message Bond 001…", key="bond_float_input", label_visibility="collapsed",
+                              placeholder="Message Bond 001…")
+        send_col, unload_col = st.columns([3, 2])
+        send_clicked = send_col.button("Send", key="bond_float_send", use_container_width=True)
+        if model_loaded:
+            if unload_col.button("Unload", key="bond_float_unload", use_container_width=True):
+                close_kernel(st.session_state.get("bond_kernel_id"))
+                st.session_state.pop("bond_kernel_id", None)
+                st.session_state.pop("bond_model_name", None)
                 st.rerun()
-            else:
-                close_kernel(kid)
-                st.error(f"Model load failed — nothing left running on the kernel:\n\n{lout}")
 
-msg = st.text_input("Message Bond 001")
-if st.button("Send"):
-    if model_loaded:
-        with st.spinner("Generating on the live Kaggle kernel..."):
-            gok, gout = run_on_kernel(
-                st.session_state["bond_kernel_id"],
-                f"print(bond_generate({json.dumps(msg)}))",
-                timeout=90,
-            )
-        if gok:
-            st.chat_message("assistant").write(gout)
-        else:
-            st.chat_message("assistant").write(
-                f"The model kernel stopped responding — {gout}\n\n"
-                "It likely died on the Kaggle side. Click \"Unload model / release kernel\" then load it again."
-            )
-    else:
-        with st.spinner("Reaching the live Kaggle kernel..."):
-            pok, pout = run_remote(
-                "import datetime, torch; "
-                "print('pong from Kaggle at', datetime.datetime.now(datetime.timezone.utc).isoformat(), "
-                "'| CUDA available:', torch.cuda.is_available())"
-            )
-        if pok:
-            st.chat_message("assistant").write(
-                f"Kernel reachable — {pout}\n\n"
-                f"(Your message — “{msg}” — wasn't sent to a language model; none is loaded yet. "
-                "Click \"Load Bond's model\" above.)"
-            )
-        else:
-            st.chat_message("assistant").write(f"Couldn't reach the kernel: {pout}")
+        if send_clicked and fmsg:
+            st.session_state.setdefault("bond_messages", []).append({"role": "user", "content": fmsg})
+            if not model_loaded:
+                lok, lerr = load_bond_model()
+                if not lok:
+                    st.session_state["bond_messages"].append({"role": "assistant", "content": f"Couldn't load a model to answer that: {lerr}"})
+                model_loaded = lok
+            if model_loaded:
+                with st.spinner("Generating on the live Kaggle kernel..."):
+                    gok, gout = run_on_kernel(
+                        st.session_state["bond_kernel_id"],
+                        f"print(bond_generate({json.dumps(fmsg)}))",
+                        timeout=90,
+                    )
+                if gok:
+                    st.session_state["bond_messages"].append({"role": "assistant", "content": gout})
+                else:
+                    st.session_state["bond_messages"].append({
+                        "role": "assistant",
+                        "content": f"The model kernel stopped responding — {gout}\n\n"
+                                   "It likely died on the Kaggle side. Click \"Unload\" then send another message to reload.",
+                    })
+            st.rerun()
