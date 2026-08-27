@@ -531,13 +531,17 @@ if not connected:
     st.stop()
 
 # --- Connected: run the REAL check on every load/refresh, no button needed. -
-# A real Settings control -- the dashboard body below renders inside
-# components.html()'s iframe, which is pure static HTML/JS with no
-# connection back to this Python process at all, so a truly *working*
-# toggle can't live inside that fancy left nav no matter how it's wired.
-# This lives in the real outer page instead, right where a viewer will
-# actually find it.
-with st.expander("⚙️ Settings", expanded=False):
+# A real Settings control lives in Streamlit's own NATIVE sidebar (st.sidebar)
+# -- a genuine, fully backend-connected collapsible panel on the left, with
+# its own built-in expand/collapse arrow. This is unrelated to the
+# decorative left nav inside the dashboard body below (that one renders
+# inside components.html()'s iframe, pure static HTML/JS with no connection
+# back to this Python process at all -- its own "Settings" icon there is
+# just for show and can't host a genuinely working toggle no matter how it's
+# styled). st.sidebar sidesteps that limitation entirely since it isn't
+# part of that iframe.
+with st.sidebar:
+    st.markdown("### ⚙️ Settings")
     st.checkbox(
         "Show Streamlit Cloud toolbar & footer",
         key="mi_show_chrome",
@@ -1179,10 +1183,10 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
     <div class="group-title"><span class="bar"></span><h3>Platform chrome &amp; connection</h3></div>
     <div class="card" style="max-width:520px">
       <div class="head">
-        <div><div class="t">⚙️ Settings panel, above the dashboard</div>
+        <div><div class="t">⚙️ Settings, in the sidebar</div>
         <div class="s">Show Streamlit Cloud toolbar &amp; footer, Forget connection</div></div>
       </div>
-      <div class="tip">Open the real <b>⚙️ Settings</b> expander directly above this dashboard (scroll up) — it's a genuine Streamlit control, so the toggle and the "Manage app" badge it reveals actually work. Hidden by default for regular viewers.</div>
+      <div class="tip">Open the sidebar on the left edge of the browser window (click the arrow, or it may already be open) — it's Streamlit's own native panel, so the toggle actually works. Hidden by default for regular viewers.</div>
     </div>
   </div>
 </section>
