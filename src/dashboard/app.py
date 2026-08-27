@@ -56,6 +56,9 @@ st.markdown(
     "body:not(.mi-show-chrome) [data-testid='stToolbar'], "
     "body:not(.mi-show-chrome) [data-testid='stStatusWidget'], "
     "body:not(.mi-show-chrome) [data-testid='stDecoration'], "
+    "body:not(.mi-show-chrome) [data-testid='stAppDeployButton'], "
+    "body:not(.mi-show-chrome) [class*='viewerBadge'], "
+    "body:not(.mi-show-chrome) a[href*='streamlit.io'], "
     "body:not(.mi-show-chrome) #MainMenu, "
     "body:not(.mi-show-chrome) footer "
     "{display:none !important}</style>",
@@ -311,7 +314,20 @@ BOND_MODEL_IDS = {
     "Zephyr-7b-beta": "HuggingFaceH4/zephyr-7b-beta",
 }
 
-BOND_LOAD_CODE = r"""
+# Default model when Bond first loads -- the smallest/fastest of the four,
+# so the first message doesn't wait on a 7B download. Switching to a
+# different model in the picker loads only THAT one, on demand -- not all
+# four upfront, which is what made the first message slow before.
+BOND_DEFAULT_MODEL = "Phi-3.5-mini-instruct"
+
+
+def bond_load_one_code(label: str, model_id: str) -> str:
+    """Code sent to the persistent Bond kernel to load exactly one model,
+    adding it to that kernel's BOND_MODELS dict (creating it on first call)
+    rather than replacing whatever's already loaded there -- so switching
+    models in the picker accumulates them on the same kernel instead of
+    forcing a reload of ones already fetched this session."""
+    return f'''
 import sys, subprocess
 subprocess.run([sys.executable, "-m", "pip", "install", "-q",
                 "transformers", "accelerate", "bitsandbytes"], check=True)
@@ -319,45 +335,35 @@ subprocess.run([sys.executable, "-m", "pip", "install", "-q",
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-MODEL_IDS = {
-    "Qwen2.5-7B-Instruct": "Qwen/Qwen2.5-7B-Instruct",
-    "Phi-3.5-mini-instruct": "microsoft/Phi-3.5-mini-instruct",
-    "Mistral-7B-Instruct-v0.3": "mistralai/Mistral-7B-Instruct-v0.3",
-    "Zephyr-7b-beta": "HuggingFaceH4/zephyr-7b-beta",
-}
+if "BOND_MODELS" not in globals():
+    BOND_MODELS = {{}}
 
 _bnb = BitsAndBytesConfig(
     load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16,
     bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
 )
 
-BOND_MODELS = {}
-_loaded = []
-_failed = {}
-for _label, _model_id in MODEL_IDS.items():
-    try:
-        _tok = AutoTokenizer.from_pretrained(_model_id)
-        _mod = AutoModelForCausalLM.from_pretrained(_model_id, quantization_config=_bnb, device_map="auto")
-        BOND_MODELS[_label] = (_tok, _mod)
-        _loaded.append(_label)
-    except Exception as _e:
-        _failed[_label] = str(_e)[:200]
+_label = {label!r}
+_model_id = {model_id!r}
+try:
+    _tok = AutoTokenizer.from_pretrained(_model_id)
+    _mod = AutoModelForCausalLM.from_pretrained(_model_id, quantization_config=_bnb, device_map="auto")
+    BOND_MODELS[_label] = (_tok, _mod)
+    print("BOND_READY:" + _label)
+except Exception as _e:
+    print("BOND_FAILED:" + _label + "=" + str(_e)[:200])
 
 def bond_generate(prompt, model_label, max_new_tokens=256):
     if model_label not in BOND_MODELS:
-        return f"[{model_label} isn't loaded on this kernel]"
+        return f"[{{model_label}} isn't loaded on this kernel]"
     tok, mod = BOND_MODELS[model_label]
-    messages = [{"role": "user", "content": prompt}]
+    messages = [{{"role": "user", "content": prompt}}]
     text = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     inputs = tok(text, return_tensors="pt").to(mod.device)
     out = mod.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=True, temperature=0.7)
     reply = tok.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
     return reply.strip()
-
-print("BOND_READY:" + ",".join(_loaded))
-if _failed:
-    print("BOND_FAILED:" + ",".join(f"{k}={v}" for k, v in _failed.items()))
-"""
+'''
 
 
 def esc(text: str) -> str:
@@ -745,13 +751,13 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
         <div class="foot">full breakdown → GPU &amp; CUDA tab</div>
       </div>
       <div class="card">
-        <div class="head"><div class="badge">4</div><div><div class="t">4 models loaded on demand</div><div class="s">4-bit, bitsandbytes</div></div><span class="statepill good"><span class="d"></span>on demand</span></div>
+        <div class="head"><div class="badge">4</div><div><div class="t">Pick a model, it loads on demand</div><div class="s">4-bit, bitsandbytes</div></div><span class="statepill good"><span class="d"></span>on demand</span></div>
         <div class="rows">
           <div class="row">models<b>Qwen2.5-7B · Phi-3.5-mini · Mistral-7B · Zephyr-7B</b></div>
-          <div class="row">install + load<b>on first Bond message</b></div>
-          <div class="row">typical first-load time<b>several min (all four)</b></div>
+          <div class="row">default<b>Phi-3.5-mini (fastest)</b></div>
+          <div class="row">install + load<b>only the picked model, not all four</b></div>
         </div>
-        <div class="foot">click the Bond 001 button (bottom-right) and just start typing — all four load, pick which one answers</div>
+        <div class="foot">click the Bond 001 button (bottom-right), pick a model from the dropdown — only that one loads, ready by the time you reach the chat box</div>
       </div>
       <div class="card">
         <div class="head"><div class="badge">…</div><div><div class="t">Agent orchestration</div><div class="s">6 planned agents</div></div><span class="statepill idle"><span class="d"></span>idle</span></div>
@@ -944,16 +950,16 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
     <div class="tip">Prompt/response pane, tokens-in, tokens-out, tokens/sec, latency, and GPU memory consumed per request — each pulled from a real generation call through the kernel bridge, not simulated.</div>
   </div>
   <div class="group">
-    <div class="group-title"><span class="bar"></span><h3>Candidate models for Bond 001</h3><span class="note">4 load together on first message · 2 excluded (gated)</span></div>
+    <div class="group-title"><span class="bar"></span><h3>Candidate models for Bond 001</h3><span class="note">pick one in the dropdown — only that one loads · 2 excluded (gated)</span></div>
     <div class="grid">
-      <div class="card"><div class="head"><div class="badge">Q</div><div><div class="t">Qwen2.5-7B-Instruct</div><div class="s">7B · Alibaba · ungated · strong tool-use</div></div><span class="statepill good"><span class="d"></span>loads on demand</span></div><div class="foot">Strong at tool-calling for the agent layer — pick it in Bond's model selector once loaded</div></div>
-      <div class="card"><div class="head"><div class="badge">Φ</div><div><div class="t">Phi-3.5-mini-instruct</div><div class="s">3.8B · microsoft · ungated</div></div><span class="statepill good"><span class="d"></span>loads on demand</span></div><div class="foot">Smallest/fastest of the four — good for quick replies</div></div>
-      <div class="card"><div class="head"><div class="badge">M</div><div><div class="t">Mistral-7B-Instruct-v0.3</div><div class="s">7B · ungated · function-calling</div></div><span class="statepill good"><span class="d"></span>loads on demand</span></div><div class="foot">Loads alongside the other three, ready to pick</div></div>
-      <div class="card"><div class="head"><div class="badge">Z</div><div><div class="t">Zephyr-7b-beta</div><div class="s">7B · ungated · easy fallback</div></div><span class="statepill good"><span class="d"></span>loads on demand</span></div><div class="foot">Loads alongside the other three, ready to pick</div></div>
+      <div class="card"><div class="head"><div class="badge">Q</div><div><div class="t">Qwen2.5-7B-Instruct</div><div class="s">7B · Alibaba · ungated · strong tool-use</div></div><span class="statepill good"><span class="d"></span>pick to load</span></div><div class="foot">Strong at tool-calling for the agent layer</div></div>
+      <div class="card"><div class="head"><div class="badge">Φ</div><div><div class="t">Phi-3.5-mini-instruct</div><div class="s">3.8B · microsoft · ungated</div></div><span class="statepill warn"><span class="d"></span>default</span></div><div class="foot">Smallest/fastest — loaded automatically unless you pick a different one</div></div>
+      <div class="card"><div class="head"><div class="badge">M</div><div><div class="t">Mistral-7B-Instruct-v0.3</div><div class="s">7B · ungated · function-calling</div></div><span class="statepill good"><span class="d"></span>pick to load</span></div><div class="foot">Loads on its own once picked, alongside whatever's already loaded on this kernel</div></div>
+      <div class="card"><div class="head"><div class="badge">Z</div><div><div class="t">Zephyr-7b-beta</div><div class="s">7B · ungated · easy fallback</div></div><span class="statepill good"><span class="d"></span>pick to load</span></div><div class="foot">Loads on its own once picked, alongside whatever's already loaded on this kernel</div></div>
       <div class="card"><div class="head"><div class="badge">L</div><div><div class="t">Llama-3.1-8B-Instruct</div><div class="s">8B · Meta · gated — accept license on HF</div></div><span class="statepill idle"><span class="d"></span>excluded for now</span></div><div class="foot">Needs a license-accepted HF token configured on the Kaggle kernel first — not wired up yet</div></div>
       <div class="card"><div class="head"><div class="badge">G</div><div><div class="t">Gemma-2-9b-it</div><div class="s">9B · Google · gated — accept license on HF</div></div><span class="statepill idle"><span class="d"></span>excluded for now</span></div><div class="foot">Needs a license-accepted HF token configured on the Kaggle kernel first — not wired up yet</div></div>
     </div>
-    <div class="tip">The four ungated models load together in one go — roughly 16-20GB of 4-bit weights across the two T4s' combined 32GB. Bond's floating panel (bottom-right) lets you pick which loaded model answers each message. The two gated models are left out of the default load until a licensed HF token is set up on the Kaggle side.</div>
+    <div class="tip">Bond's floating panel (bottom-right) loads only the model you pick from its dropdown, not all four — Phi-3.5-mini loads by default since it's fastest. Picking a different model loads it fresh; models already loaded this session stay in memory on the same kernel, so switching back to one you already used is instant. The two gated models are left out until a licensed HF token is set up on the Kaggle side.</div>
   </div>
 </section>
 
@@ -1178,44 +1184,29 @@ st.markdown(
 )
 
 
-def load_bond_models():
-    """Open a persistent kernel and load all four Bond candidate models onto
-    it. Updates session_state on success. Returns (ok, error_message_or_None).
-    ok is True as long as the kernel came up and ran the load script AT ALL —
-    individual per-model failures are reported separately (bond_failed_models)
-    rather than sinking the whole load, since one gated/broken model
-    shouldn't block the other three from being usable."""
-    with st.spinner("Opening a dedicated Kaggle kernel for Bond..."):
-        kid, err = open_kernel()
-    if not kid:
-        return False, f"Couldn't open a kernel: {err}"
+def load_one_bond_model(label: str):
+    """Load exactly one model (opening the persistent kernel first if this is
+    the first one) and add it to bond_loaded_models on success. Returns
+    (ok, error_message_or_None)."""
+    kernel_id = st.session_state.get("bond_kernel_id")
+    if not kernel_id:
+        with st.spinner("Opening a dedicated Kaggle kernel for Bond..."):
+            kernel_id, err = open_kernel()
+        if not kernel_id:
+            return False, f"Couldn't open a kernel: {err}"
+        st.session_state["bond_kernel_id"] = kernel_id
     with st.spinner(
-        f"Loading {len(BOND_MODEL_IDS)} models onto the Kaggle T4s (installing transformers/"
-        "bitsandbytes, downloading ~5GB each, loading in 4-bit) — this really can take several "
-        "minutes the first time this Kaggle session does it..."
+        f"Loading {label} onto the Kaggle T4 (installing transformers/bitsandbytes, "
+        "downloading weights, loading in 4-bit) — this can take a couple minutes the "
+        "first time this Kaggle session does it..."
     ):
-        lok, lout = run_on_kernel(kid, BOND_LOAD_CODE, timeout=900)
-    if lok and "BOND_READY:" in lout:
-        ready_part = lout.split("BOND_READY:", 1)[1]
-        loaded_str = ready_part.split("\n", 1)[0].split("BOND_FAILED:", 1)[0].strip()
-        loaded = [m for m in loaded_str.split(",") if m]
-        failed = {}
-        if "BOND_FAILED:" in lout:
-            failed_str = lout.split("BOND_FAILED:", 1)[1].strip()
-            for pair in failed_str.split(","):
-                if "=" in pair:
-                    k, v = pair.split("=", 1)
-                    failed[k] = v
-        if not loaded:
-            close_kernel(kid)
-            return False, f"None of the {len(BOND_MODEL_IDS)} models loaded:\n\n{lout}"
-        st.session_state["bond_kernel_id"] = kid
-        st.session_state["bond_loaded_models"] = loaded
-        st.session_state["bond_failed_models"] = failed
-        st.session_state["bond_selected_model"] = loaded[0]
+        lok, lout = run_on_kernel(kernel_id, bond_load_one_code(label, BOND_MODEL_IDS[label]), timeout=480)
+    if lok and f"BOND_READY:{label}" in lout:
+        st.session_state.setdefault("bond_loaded_models", [])
+        if label not in st.session_state["bond_loaded_models"]:
+            st.session_state["bond_loaded_models"].append(label)
         return True, None
-    close_kernel(kid)
-    return False, f"Model load failed — nothing left running on the kernel:\n\n{lout}"
+    return False, f"Load failed:\n\n{lout}"
 
 
 with st.container(key="bond_fab"):
@@ -1225,24 +1216,33 @@ with st.container(key="bond_fab"):
 if st.session_state.get("bond_panel_open"):
     with st.container(key="bond_panel"):
         st.markdown("### Bond 001")
-        loaded_models = st.session_state.get("bond_loaded_models", [])
-        model_loaded = bool(st.session_state.get("bond_kernel_id") and loaded_models)
 
-        if model_loaded:
-            st.caption(f"● {len(loaded_models)} model(s) ready: {', '.join(loaded_models)}")
-            failed_models = st.session_state.get("bond_failed_models", {})
-            if failed_models:
-                st.caption(f"⚠ didn't load: {', '.join(failed_models.keys())}")
-            st.session_state["bond_selected_model"] = st.selectbox(
-                "Answering with", loaded_models,
-                index=loaded_models.index(st.session_state.get("bond_selected_model", loaded_models[0]))
-                if st.session_state.get("bond_selected_model") in loaded_models else 0,
-                key="bond_model_picker", label_visibility="collapsed",
-            )
+        model_options = list(BOND_MODEL_IDS.keys())
+        if st.session_state.get("bond_selected_model") not in model_options:
+            st.session_state["bond_selected_model"] = BOND_DEFAULT_MODEL
+        selected = st.selectbox("Model", model_options, key="bond_selected_model")
+
+        loaded_models = st.session_state.get("bond_loaded_models", [])
+        model_ready = selected in loaded_models
+        failed_key = f"bond_load_failed_{selected}"
+
+        if model_ready:
+            st.caption(f"● {selected} ready")
+        elif st.session_state.get(failed_key):
+            st.caption(f"⚠ {selected} failed to load: {st.session_state[failed_key]}")
+            if st.button(f"Retry loading {selected}", key="bond_retry_load"):
+                st.session_state.pop(failed_key, None)
+                st.rerun()
         else:
-            st.caption(f"○ no models loaded — your first message loads all {len(BOND_MODEL_IDS)} "
-                       "(installs deps, downloads ~5GB each, several minutes), then answers with "
-                       "the first one that succeeded.")
+            # Load as soon as this model is picked/opened, not on the first
+            # Send -- by the time the user reaches the chat input, it's
+            # already ready ("click and go to chat, it uses it right away").
+            lok, lerr = load_one_bond_model(selected)
+            if lok:
+                st.rerun()
+            else:
+                st.session_state[failed_key] = lerr
+                st.rerun()
 
         if "bond_messages" not in st.session_state:
             st.session_state["bond_messages"] = [
@@ -1252,13 +1252,13 @@ if st.session_state.get("bond_panel_open"):
         for m in st.session_state.get("bond_messages", []):
             st.chat_message(m["role"]).write(m["content"])
 
-        if model_loaded:
+        if st.session_state.get("bond_kernel_id"):
             if st.button("Unload all", key="bond_float_unload", use_container_width=True):
                 close_kernel(st.session_state.get("bond_kernel_id"))
+                for k in [k for k in st.session_state if k.startswith("bond_load_failed_")]:
+                    st.session_state.pop(k, None)
                 st.session_state.pop("bond_kernel_id", None)
                 st.session_state.pop("bond_loaded_models", None)
-                st.session_state.pop("bond_failed_models", None)
-                st.session_state.pop("bond_selected_model", None)
                 st.rerun()
 
         # st.chat_input submits on Enter like a normal chat, no separate
@@ -1268,13 +1268,7 @@ if st.session_state.get("bond_panel_open"):
 
         if fmsg:
             st.session_state.setdefault("bond_messages", []).append({"role": "user", "content": fmsg})
-            if not model_loaded:
-                lok, lerr = load_bond_models()
-                if not lok:
-                    st.session_state["bond_messages"].append({"role": "assistant", "content": f"Couldn't load models to answer that: {lerr}"})
-                model_loaded = lok
-            if model_loaded:
-                selected = st.session_state.get("bond_selected_model", st.session_state["bond_loaded_models"][0])
+            if selected in st.session_state.get("bond_loaded_models", []):
                 with st.spinner(f"Generating with {selected} on the live Kaggle kernel..."):
                     gok, gout = run_on_kernel(
                         st.session_state["bond_kernel_id"],
@@ -1289,4 +1283,9 @@ if st.session_state.get("bond_panel_open"):
                         "content": f"The model kernel stopped responding — {gout}\n\n"
                                    "It likely died on the Kaggle side. Click \"Unload all\" then send another message to reload.",
                     })
+            else:
+                st.session_state["bond_messages"].append({
+                    "role": "assistant",
+                    "content": f"{selected} isn't loaded yet — check the status above the chat.",
+                })
             st.rerun()
