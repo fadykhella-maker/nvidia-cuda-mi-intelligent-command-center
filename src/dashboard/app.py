@@ -1184,6 +1184,11 @@ if st.session_state.get("bond_panel_open"):
                        "(installs deps, downloads ~5GB each, several minutes), then answers with "
                        "the first one that succeeded.")
 
+        if "bond_messages" not in st.session_state:
+            st.session_state["bond_messages"] = [
+                {"role": "assistant", "content": "Welcome Mr Khella, how may I assist you today?"}
+            ]
+
         for m in st.session_state.get("bond_messages", []):
             st.chat_message(m["role"]).write(m["content"])
 
