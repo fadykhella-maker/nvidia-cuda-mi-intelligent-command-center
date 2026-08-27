@@ -47,8 +47,8 @@ st.markdown(
 # --- Connection state: read from the URL's query params, not session_state,
 # so a page REFRESH (not just a rerun) keeps it and re-checks automatically.
 params = st.query_params
-jupyter_url = params.get("jupyter_url", "")
-jupyter_token = params.get("jupyter_token", "")
+jupyter_url = st.secrets.get("JUPYTER_URL", params.get("jupyter_url", ""))
+jupyter_token = st.secrets.get("JUPYTER_TOKEN", params.get("jupyter_token", ""))
 
 
 def run_remote(code: str, timeout: int = 20):
