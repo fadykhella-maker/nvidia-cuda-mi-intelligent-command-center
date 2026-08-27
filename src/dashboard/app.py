@@ -1194,6 +1194,58 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
       </div>
       <div class="tip">Open the sidebar on the left edge of the browser window (click the arrow, or it may already be open) — it's Streamlit's own native panel, so the toggle actually works. Hidden by default for regular viewers.</div>
     </div>
+    <div class="card" style="max-width:520px;margin-top:14px">
+      <div class="head">
+        <div><div class="t">"Manage app" floating button</div>
+        <div class="s">Streamlit Cloud's own overlay — not controlled by this app</div></div>
+      </div>
+      <div class="tip">Same category as the sidebar toggle above: platform chrome that lives outside this app's own page entirely, so nothing in <span class="mono">app.py</span> can move, style, or hide it. It's Streamlit Community Cloud's own owner/collaborator control, visible only when the app's Streamlit account owner (or a collaborator) is logged in and viewing the app in a browser — regular anonymous visitors never see it at all.</div>
+    </div>
+  </div>
+
+  <div class="group">
+    <div class="group-title"><span class="bar"></span><h3>Header status, mirrored here</h3><span class="note">so it's not stranded only in the top bar</span></div>
+    <div class="card" style="max-width:520px">
+      <div class="head">
+        <div><div class="t">Theme</div>
+        <div class="s">Real, working control — pure client-side, no backend needed</div></div>
+      </div>
+      <button class="themebtn" id="themeBtn2" aria-label="Toggle bright / dark mode" title="Toggle bright / dark mode" style="width:fit-content">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v3M12 18.5v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2.5 12h3M18.5 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
+        <span class="knob"><i></i></span>
+        <svg viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 1 1 9.5 4 7 7 0 0 0 20 14.5Z"/></svg>
+      </button>
+    </div>
+    <div class="card" style="max-width:520px;margin-top:14px">
+      <div class="head">
+        <div><div class="t">GPU backend &amp; CUDA</div>
+        <div class="s">Real data, mirrored from the header — not a control either place</div></div>
+      </div>
+      <div class="syncbox-row">
+        <span class="pill {{PILL_CLASS}}"><span class="dot"></span>GPU BACKEND {{STATUS_TEXT}}</span>
+        <div class="nvlogo" style="border-left:none;padding-left:0"><b>NVIDIA</b>CUDA {{CUDA_KPI}}</div>
+      </div>
+    </div>
+    <div class="card" style="max-width:520px;margin-top:14px">
+      <div class="head">
+        <div><div class="t">APP-TRACKED GPU HOURS</div>
+        <div class="s">Decorative label only — no number behind it yet</div></div>
+      </div>
+      <div class="tip">Not wired to real data at all yet, in the header or here — see the Tokens &amp; GPU hours tab for the actual (also still placeholder, honestly labeled) tracking card.</div>
+    </div>
+    <div class="card" style="max-width:520px;margin-top:14px">
+      <div class="head">
+        <div><div class="t">NVIDIA GPU providers</div>
+        <div class="s">Kaggle status is real; AWS/Azure/GCP are placeholders</div></div>
+      </div>
+      <div class="syncbox-row">
+        <span class="gpitem {{PILL_CLASS}}"><i class="gpdot"></i>Kaggle</span>
+        <span class="gpitem off"><i class="gpdot"></i>AWS</span>
+        <span class="gpitem off"><i class="gpdot"></i>Azure</span>
+        <span class="gpitem off"><i class="gpdot"></i>GCP</span>
+      </div>
+      <div class="tip">Kaggle's LED reflects the real live check, same as GPU BACKEND above. AWS/Azure/GCP are always off — there's no multi-cloud switching built yet, this is just marking where it would go once that's actually scoped. Clicking the row doesn't switch providers; it only shows a note about Kaggle's own start/stop limitations.</div>
+    </div>
   </div>
 </section>
 
@@ -1220,23 +1272,30 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
       document.getElementById(b.dataset.view).classList.add('active');
     });
   });
-  var themeBtn = document.getElementById('themeBtn');
+  // Two theme buttons now (header + Settings tab, added so the Settings
+  // page mirrors the header instead of stranding a real control up top
+  // only) -- both are pure client-side (localStorage + a data-theme
+  // attribute on this iframe's own <html>), so keeping them in sync is
+  // just a matter of updating both on every change, no backend involved.
+  var themeBtns = [document.getElementById('themeBtn'), document.getElementById('themeBtn2')].filter(Boolean);
   var root = document.documentElement;
   function applyTheme(t){
     if(t){ root.setAttribute('data-theme', t); } else { root.removeAttribute('data-theme'); }
     var sysDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
     var isDark = t ? t === 'dark' : sysDark;
-    themeBtn.classList.toggle('dark', isDark);
+    themeBtns.forEach(function(b){ b.classList.toggle('dark', isDark); });
   }
   var saved = null;
   try{ saved = localStorage.getItem('mi-cc-theme'); }catch(e){}
   applyTheme(saved);
-  themeBtn.addEventListener('click', function(){
-    var sysDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
-    var current = root.getAttribute('data-theme') || (sysDark ? 'dark' : 'light');
-    var next = current === 'dark' ? 'light' : 'dark';
-    applyTheme(next);
-    try{ localStorage.setItem('mi-cc-theme', next); }catch(e){}
+  themeBtns.forEach(function(btn){
+    btn.addEventListener('click', function(){
+      var sysDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+      var current = root.getAttribute('data-theme') || (sysDark ? 'dark' : 'light');
+      var next = current === 'dark' ? 'light' : 'dark';
+      applyTheme(next);
+      try{ localStorage.setItem('mi-cc-theme', next); }catch(e){}
+    });
   });
 
   var toast = document.getElementById('toast'); var toastTimer = null;
