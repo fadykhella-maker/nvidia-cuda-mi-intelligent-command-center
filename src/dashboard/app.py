@@ -47,7 +47,18 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="MI Command Center — live", page_icon="\U0001F5A5️", layout="wide")
 st.markdown(
     "<style>.block-container{padding:0 !important;max-width:100% !important} "
-    "iframe{border:none !important}</style>",
+    "iframe{border:none !important} "
+    # Hide Streamlit Cloud's own viewer chrome (Share/GitHub/menu toolbar up
+    # top, the "Manage app" badge at the bottom) for regular viewers by
+    # default. The dashboard's own Settings tab can flip `mi-show-chrome` on
+    # <body> (via the same cross-frame + localStorage pattern already used
+    # for the dark/light theme toggle) to bring it back when actually needed.
+    "body:not(.mi-show-chrome) [data-testid='stToolbar'], "
+    "body:not(.mi-show-chrome) [data-testid='stStatusWidget'], "
+    "body:not(.mi-show-chrome) [data-testid='stDecoration'], "
+    "body:not(.mi-show-chrome) #MainMenu, "
+    "body:not(.mi-show-chrome) footer "
+    "{display:none !important}</style>",
     unsafe_allow_html=True,
 )
 
@@ -665,6 +676,7 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
   <button class="nav" data-view="agents"><span class="ico"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.4"/><rect x="13" y="4" width="7" height="7" rx="1.4"/><rect x="4" y="13" width="7" height="7" rx="1.4"/><rect x="13" y="13" width="7" height="7" rx="1.4"/></svg></span><span class="cap">Agents</span></button>
   <button class="nav" data-view="tokens"><span class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v9M9 10h4.2a1.8 1.8 0 0 1 0 3.6H9m2-7v1.2m0 9.6V17.4"/></svg></span><span class="cap">Tokens</span></button>
   <div class="spacer"></div>
+  <button class="nav" data-view="settings"><span class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span><span class="cap">Settings</span></button>
   <button class="nav" data-view="about"><span class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.6v.1"/></svg></span><span class="cap">About</span></button>
 </nav>
 
@@ -1000,6 +1012,28 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
   </div>
 </section>
 
+<section class="view" id="settings">
+  <div class="lead">
+    <h2><span class="g">Settings</span></h2>
+    <p>Local to this browser (saved via localStorage, not shared across viewers).</p>
+  </div>
+  <div class="group">
+    <div class="group-title"><span class="bar"></span><h3>Platform chrome</h3></div>
+    <div class="card" style="max-width:520px">
+      <div class="head">
+        <div><div class="t">Show Streamlit Cloud toolbar &amp; footer</div>
+        <div class="s">Share / GitHub / menu up top, "Manage app" badge at the bottom</div></div>
+      </div>
+      <label class="themebtn" style="cursor:pointer;width:fit-content">
+        <span class="knob"><i id="chromeKnobDot"></i></span>
+        <span id="chromeToggleLabel">Hidden (default)</span>
+        <input type="checkbox" id="chromeToggle" style="display:none">
+      </label>
+      <div class="tip">Hidden by default for regular viewers. Turn this on if you need the Share link, the GitHub repo link, or app management controls.</div>
+    </div>
+  </div>
+</section>
+
 <section class="view" id="about">
   <div class="lead">
     <h2>About this <span class="g">command center</span></h2>
@@ -1041,6 +1075,32 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
     applyTheme(next);
     try{ localStorage.setItem('mi-cc-theme', next); }catch(e){}
   });
+
+  // Streamlit Cloud's own toolbar/footer live in the OUTER real page, not
+  // this iframe -- so unlike the theme toggle above (which only needs this
+  // iframe's own document), this needs window.top (same-origin: this
+  // dashboard IS the Streamlit app, just rendered via components.html).
+  var chromeToggle = document.getElementById('chromeToggle');
+  var chromeLabel = document.getElementById('chromeToggleLabel');
+  var chromeDot = document.getElementById('chromeKnobDot');
+  function applyChromeVisible(visible){
+    try{
+      window.top.document.body.classList.toggle('mi-show-chrome', !!visible);
+    }catch(e){}
+    if(chromeToggle) chromeToggle.checked = !!visible;
+    if(chromeLabel) chromeLabel.textContent = visible ? 'Visible' : 'Hidden (default)';
+    if(chromeDot) chromeDot.parentElement.style.background = visible ? 'var(--nv)' : '';
+    if(chromeDot) chromeDot.style.left = visible ? '13px' : '2px';
+  }
+  var chromeSaved = null;
+  try{ chromeSaved = window.top.localStorage.getItem('mi-show-chrome'); }catch(e){}
+  applyChromeVisible(chromeSaved === '1');
+  if(chromeToggle){
+    chromeToggle.addEventListener('change', function(){
+      applyChromeVisible(chromeToggle.checked);
+      try{ window.top.localStorage.setItem('mi-show-chrome', chromeToggle.checked ? '1' : '0'); }catch(e){}
+    });
+  }
 
   var toast = document.getElementById('toast'); var toastTimer = null;
   function showToast(html){
@@ -1192,12 +1252,8 @@ if st.session_state.get("bond_panel_open"):
         for m in st.session_state.get("bond_messages", []):
             st.chat_message(m["role"]).write(m["content"])
 
-        fmsg = st.text_input("Message Bond 001…", key="bond_float_input", label_visibility="collapsed",
-                              placeholder="Message Bond 001…")
-        send_col, unload_col = st.columns([3, 2])
-        send_clicked = send_col.button("Send", key="bond_float_send", use_container_width=True)
         if model_loaded:
-            if unload_col.button("Unload all", key="bond_float_unload", use_container_width=True):
+            if st.button("Unload all", key="bond_float_unload", use_container_width=True):
                 close_kernel(st.session_state.get("bond_kernel_id"))
                 st.session_state.pop("bond_kernel_id", None)
                 st.session_state.pop("bond_loaded_models", None)
@@ -1205,7 +1261,12 @@ if st.session_state.get("bond_panel_open"):
                 st.session_state.pop("bond_selected_model", None)
                 st.rerun()
 
-        if send_clicked and fmsg:
+        # st.chat_input submits on Enter like a normal chat, no separate
+        # Send button/click check needed (unlike st.text_input, which only
+        # commits its value on Enter/blur but doesn't trigger any action).
+        fmsg = st.chat_input("Message Bond 001…", key="bond_float_input")
+
+        if fmsg:
             st.session_state.setdefault("bond_messages", []).append({"role": "user", "content": fmsg})
             if not model_loaded:
                 lok, lerr = load_bond_models()
