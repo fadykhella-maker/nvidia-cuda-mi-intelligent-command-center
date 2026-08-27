@@ -1351,7 +1351,11 @@ components.html(html, height=980, scrolling=False)
 st.markdown(
     """
     <style>
-    div.st-key-bond_fab { position: fixed; right: 22px; bottom: 22px; z-index: 999998; width: 56px; }
+    /* bottom offset pushed up from 22px to clear Streamlit Cloud's own
+       "Manage app" badge, which anchors to that same bottom-right corner
+       for the logged-in owner -- confirmed via screenshot that it was
+       overlapping this button's clickable area, making it fiddly to hit. */
+    div.st-key-bond_fab { position: fixed; right: 22px; bottom: 86px; z-index: 999998; width: 56px; }
     div.st-key-bond_fab button {
         width: 56px; height: 56px; border-radius: 50% !important;
         background: radial-gradient(circle at 32% 28%, #a6e000, #76b900 60%) !important;
@@ -1360,9 +1364,9 @@ st.markdown(
         box-shadow: 0 10px 26px -8px rgba(118,185,0,.55);
     }
     div.st-key-bond_panel {
-        position: fixed !important; right: 22px; bottom: 90px; z-index: 999999;
+        position: fixed !important; right: 22px; bottom: 154px; z-index: 999999;
         width: 380px; max-width: calc(100vw - 44px);
-        max-height: min(640px, calc(100vh - 130px)); overflow-y: auto;
+        max-height: min(640px, calc(100vh - 194px)); overflow-y: auto;
         background: #0d1310; border: 1px solid #223129; border-radius: 14px;
         box-shadow: 0 30px 70px -20px #000; padding: 16px 18px;
     }
