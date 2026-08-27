@@ -34,7 +34,9 @@
 
 import datetime
 import json
+import os
 import re
+import subprocess
 import time
 import uuid
 
@@ -54,6 +56,81 @@ st.markdown(
 params = st.query_params
 jupyter_url = st.secrets.get("JUPYTER_URL", params.get("jupyter_url", ""))
 jupyter_token = st.secrets.get("JUPYTER_TOKEN", params.get("jupyter_token", ""))
+
+# --- Kaggle API wake trigger + activity-based keep-alive -------------------
+# Auto-wakes Kaggle by triggering a fresh run via its REST API (kaggle kernels
+# push) when the dashboard finds itself offline on load -- no button click
+# needed. The Kaggle-side notebook's last cell watches a shared
+# "last_activity.txt" timestamp and lets the run end on its own once nobody's
+# actually used the dashboard for a while, instead of a flat multi-hour
+# reservation. Every real kernel call below (status check, Bond messages)
+# touches that same file so real usage keeps the session alive naturally.
+KAGGLE_API_TOKEN = st.secrets.get("KAGGLE_API_TOKEN", "")
+KAGGLE_KERNEL = "confidentialnvidia/confidential-nvidia-cuda-01"
+KAGGLE_KERNEL_PATH = "kaggle_kernel"  # relative to this deployed repo's root
+KAGGLE_WORKDIR = "/kaggle/working/AI_Lab"
+
+ACTIVITY_TOUCH_CODE = (
+    "import time as _t, os as _o\n"
+    f"with open(_o.path.join({KAGGLE_WORKDIR!r}, 'last_activity.txt'), 'w') as _f:\n"
+    "    _f.write(str(_t.time()))\n"
+)
+
+
+def wake_kaggle():
+    """Trigger a fresh Kaggle run via its API (kaggle kernels push) -- the
+    only channel that exists independent of the tunnel, since when Kaggle is
+    off there's no tunnel yet to send a 'start' command through.
+
+    kaggle_secrets.UserSecretsClient doesn't work in an API-triggered run (it
+    needs the interactive editor's own consent state, which a push doesn't
+    carry -- verified directly against a live push, which failed with
+    ConnectionError/HTTP 400 on get_secret()). So the *committed* notebook
+    has placeholder tokens, never real ones, and this function builds a
+    temporary copy with the real values substituted in from Streamlit's own
+    secrets, then pushes THAT -- the real values never touch git.
+
+    Returns (ok, message)."""
+    if not KAGGLE_API_TOKEN:
+        return False, "Kaggle API token isn't configured (KAGGLE_API_TOKEN secret)."
+    ngrok_authtoken = st.secrets.get("NGROK_AUTHTOKEN", "")
+    if not jupyter_token or not ngrok_authtoken:
+        return False, "JUPYTER_TOKEN and/or NGROK_AUTHTOKEN secrets aren't configured."
+
+    import shutil
+    import tempfile
+
+    src_dir = KAGGLE_KERNEL_PATH
+    nb_name = "confidential-nvidia-cuda-01.ipynb"
+    try:
+        with open(os.path.join(src_dir, nb_name), encoding="utf-8") as f:
+            nb_text = f.read()
+    except Exception as e:
+        return False, f"Couldn't read the committed notebook: {e}"
+
+    nb_text = nb_text.replace("__JUPYTER_TOKEN_PLACEHOLDER__", jupyter_token)
+    nb_text = nb_text.replace("__NGROK_AUTHTOKEN_PLACEHOLDER__", ngrok_authtoken)
+
+    tmp_dir = tempfile.mkdtemp(prefix="kaggle_wake_")
+    try:
+        with open(os.path.join(tmp_dir, nb_name), "w", encoding="utf-8") as f:
+            f.write(nb_text)
+        shutil.copy(os.path.join(src_dir, "kernel-metadata.json"), tmp_dir)
+
+        env = {**os.environ, "KAGGLE_API_TOKEN": KAGGLE_API_TOKEN}
+        try:
+            r = subprocess.run(
+                ["kaggle", "kernels", "push", "-p", tmp_dir],
+                capture_output=True, text=True, timeout=60, env=env,
+            )
+        except Exception as e:
+            return False, f"Couldn't reach Kaggle's API: {e}"
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    if r.returncode != 0:
+        return False, f"Kaggle push failed:\n{r.stdout}\n{r.stderr}"
+    return True, "Kernel run triggered — this takes roughly 1-2 minutes before the tunnel comes up."
 
 
 def run_remote(code: str, timeout: int = 20):
@@ -84,7 +161,7 @@ def run_remote(code: str, timeout: int = 20):
         },
         "parent_header": {}, "metadata": {},
         "content": {
-            "code": code, "silent": False, "store_history": False,
+            "code": ACTIVITY_TOUCH_CODE + code, "silent": False, "store_history": False,
             "user_expressions": {}, "allow_stdin": False, "stop_on_error": True,
         },
         "channel": "shell",
@@ -162,7 +239,7 @@ def run_on_kernel(kernel_id: str, code: str, timeout: int = 60):
         },
         "parent_header": {}, "metadata": {},
         "content": {
-            "code": code, "silent": False, "store_history": False,
+            "code": ACTIVITY_TOUCH_CODE + code, "silent": False, "store_history": False,
             "user_expressions": {}, "allow_stdin": False, "stop_on_error": True,
         },
         "channel": "shell",
@@ -331,6 +408,23 @@ if info_ok:
         info_ok = False
 
 online = bool(info_ok and info and info.get("cuda_available"))
+
+# --- Auto-wake: if we're offline, trigger Kaggle automatically -- no button
+# needed. Cooldown via session_state so a page that keeps refreshing while
+# Kaggle is still booting (which takes ~1-2 min) doesn't fire a fresh push
+# on every single reload.
+wake_message = None
+if not online and KAGGLE_API_TOKEN:
+    last_wake = st.session_state.get("last_wake_trigger_at", 0)
+    WAKE_COOLDOWN_SECONDS = 180
+    if time.time() - last_wake > WAKE_COOLDOWN_SECONDS:
+        wake_ok, wake_msg = wake_kaggle()
+        st.session_state["last_wake_trigger_at"] = time.time()
+        wake_message = (wake_ok, wake_msg)
+    else:
+        wait_left = int(WAKE_COOLDOWN_SECONDS - (time.time() - last_wake))
+        wake_message = (True, f"Already triggered a wake-up recently — give it up to {wait_left}s more, then refresh.")
+
 smi_text = (info or {}).get("smi", "") or info_out
 driver_m = re.search(r"Driver Version:\s*([\d.]+)", smi_text or "")
 cuda_m = re.search(r"CUDA Version:\s*([\d.]+)", smi_text or "")
@@ -359,6 +453,17 @@ if online:
       <div class="tip">This is a real, live Streamlit server (not a static claude.ai Artifact), so it can actually reach your Kaggle tunnel. The status above comes from an <code>execute_request</code> sent to the live kernel on this exact page load — refresh any time to re-check for real.</div>
     """
 else:
+    if wake_message is not None:
+        wake_ok, wake_msg = wake_message
+        wake_html = (
+            f'<div class="tip{"" if wake_ok else " warn"}"><b>'
+            f'{"🔁 Auto-wake triggered — " if wake_ok else "⚠️ Auto-wake failed — "}</b>{esc(wake_msg)}</div>'
+        )
+    else:
+        wake_html = (
+            '<div class="tip warn">Auto-wake isn\'t configured (no KAGGLE_API_TOKEN secret set) — '
+            "wake it manually from the Kaggle notebook instead.</div>"
+        )
     sync_html = f"""
       <div class="syncbox-row">
         <span class="pill off"><span class="dot"></span>GPU BACKEND OFFLINE — real check, {esc(checked_at)}</span>
@@ -366,7 +471,8 @@ else:
       </div>
       <pre style="font-family:var(--mono);font-size:10.5px;color:var(--muted);background:var(--panel2);
         border:1px solid var(--line);border-radius:8px;padding:10px 12px;max-height:160px;overflow:auto;margin:0">{esc(str(info_out))[:1200]}</pre>
-      <div class="tip warn">This is the real reason it's offline — a stale/expired tunnel URL, the Kaggle session having stopped, or a bad token. Get a fresh URL+token from the Kaggle notebook, click "Forget connection" above, and reconnect — don't just retry.</div>
+      {wake_html}
+      <div class="tip warn">This is the real reason it's offline — a stale/expired tunnel URL, the Kaggle session having stopped, or a bad token. If auto-wake was just triggered, wait ~1-2 min and hit "Recheck now" — don't need to touch the Kaggle notebook manually unless auto-wake fails.</div>
     """
 
 HTML_TEMPLATE = r"""
