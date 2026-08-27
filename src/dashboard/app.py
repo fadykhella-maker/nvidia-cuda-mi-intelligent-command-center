@@ -208,11 +208,21 @@ def close_kernel(kernel_id: str):
         pass
 
 
-# Runs once, on demand (the "Load Bond's model" button below) — installs deps,
-# downloads Qwen2.5-7B-Instruct in 4-bit (fits comfortably in one T4's 16GB),
-# and defines bond_generate() in that kernel's persistent global namespace.
-# This is real weight-download + real GPU load time (a few minutes the first
-# time on a given Kaggle session), not a simulated "connecting..." delay.
+# Runs once, on demand — installs deps, then downloads/loads FOUR ungated
+# models in 4-bit onto the persistent kernel (skips Llama-3.1/Gemma-2 from
+# the Models-tab candidate list since those are gated on HF and need a
+# license-accepted token this Kaggle session doesn't have configured).
+# ~4-5GB each in 4-bit x4 fits across the two T4s' 32GB combined via
+# device_map="auto". Real download+load time (minutes), not simulated.
+# Each model is tried independently so one failure doesn't sink the rest —
+# BOND_READY lists what actually loaded, BOND_FAILED lists what didn't.
+BOND_MODEL_IDS = {
+    "Qwen2.5-7B-Instruct": "Qwen/Qwen2.5-7B-Instruct",
+    "Phi-3.5-mini-instruct": "microsoft/Phi-3.5-mini-instruct",
+    "Mistral-7B-Instruct-v0.3": "mistralai/Mistral-7B-Instruct-v0.3",
+    "Zephyr-7b-beta": "HuggingFaceH4/zephyr-7b-beta",
+}
+
 BOND_LOAD_CODE = r"""
 import sys, subprocess
 subprocess.run([sys.executable, "-m", "pip", "install", "-q",
@@ -221,24 +231,44 @@ subprocess.run([sys.executable, "-m", "pip", "install", "-q",
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-MODEL_ID = "Qwen/Qwen2.5-7B-Instruct"
+MODEL_IDS = {
+    "Qwen2.5-7B-Instruct": "Qwen/Qwen2.5-7B-Instruct",
+    "Phi-3.5-mini-instruct": "microsoft/Phi-3.5-mini-instruct",
+    "Mistral-7B-Instruct-v0.3": "mistralai/Mistral-7B-Instruct-v0.3",
+    "Zephyr-7b-beta": "HuggingFaceH4/zephyr-7b-beta",
+}
+
 _bnb = BitsAndBytesConfig(
     load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16,
     bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
 )
-BOND_TOKENIZER = AutoTokenizer.from_pretrained(MODEL_ID)
-BOND_MODEL = AutoModelForCausalLM.from_pretrained(MODEL_ID, quantization_config=_bnb, device_map="auto")
-BOND_MODEL_NAME = MODEL_ID
 
-def bond_generate(prompt, max_new_tokens=256):
+BOND_MODELS = {}
+_loaded = []
+_failed = {}
+for _label, _model_id in MODEL_IDS.items():
+    try:
+        _tok = AutoTokenizer.from_pretrained(_model_id)
+        _mod = AutoModelForCausalLM.from_pretrained(_model_id, quantization_config=_bnb, device_map="auto")
+        BOND_MODELS[_label] = (_tok, _mod)
+        _loaded.append(_label)
+    except Exception as _e:
+        _failed[_label] = str(_e)[:200]
+
+def bond_generate(prompt, model_label, max_new_tokens=256):
+    if model_label not in BOND_MODELS:
+        return f"[{model_label} isn't loaded on this kernel]"
+    tok, mod = BOND_MODELS[model_label]
     messages = [{"role": "user", "content": prompt}]
-    text = BOND_TOKENIZER.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs = BOND_TOKENIZER(text, return_tensors="pt").to(BOND_MODEL.device)
-    out = BOND_MODEL.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=True, temperature=0.7)
-    reply = BOND_TOKENIZER.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+    text = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = tok(text, return_tensors="pt").to(mod.device)
+    out = mod.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=True, temperature=0.7)
+    reply = tok.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
     return reply.strip()
 
-print("BOND_READY:" + MODEL_ID)
+print("BOND_READY:" + ",".join(_loaded))
+if _failed:
+    print("BOND_FAILED:" + ",".join(f"{k}={v}" for k, v in _failed.items()))
 """
 
 
@@ -597,12 +627,13 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
         <div class="foot">full breakdown → GPU &amp; CUDA tab</div>
       </div>
       <div class="card">
-        <div class="head"><div class="badge">Q</div><div><div class="t">Qwen2.5-7B-Instruct inference</div><div class="s">4-bit, bitsandbytes</div></div><span class="statepill good"><span class="d"></span>on demand</span></div>
+        <div class="head"><div class="badge">4</div><div><div class="t">4 models loaded on demand</div><div class="s">4-bit, bitsandbytes</div></div><span class="statepill good"><span class="d"></span>on demand</span></div>
         <div class="rows">
+          <div class="row">models<b>Qwen2.5-7B · Phi-3.5-mini · Mistral-7B · Zephyr-7B</b></div>
           <div class="row">install + load<b>on first Bond message</b></div>
-          <div class="row">typical first-load time<b>~2-3 min</b></div>
+          <div class="row">typical first-load time<b>several min (all four)</b></div>
         </div>
-        <div class="foot">click the Bond 001 button (bottom-right) and just start typing — it loads itself the first time</div>
+        <div class="foot">click the Bond 001 button (bottom-right) and just start typing — all four load, pick which one answers</div>
       </div>
       <div class="card">
         <div class="head"><div class="badge">…</div><div><div class="t">Agent orchestration</div><div class="s">6 planned agents</div></div><span class="statepill idle"><span class="d"></span>idle</span></div>
@@ -795,16 +826,16 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
     <div class="tip">Prompt/response pane, tokens-in, tokens-out, tokens/sec, latency, and GPU memory consumed per request — each pulled from a real generation call through the kernel bridge, not simulated.</div>
   </div>
   <div class="group">
-    <div class="group-title"><span class="bar"></span><h3>Candidate models for Bond 001</h3><span class="note">once vLLM serving is wired — one loaded at a time</span></div>
+    <div class="group-title"><span class="bar"></span><h3>Candidate models for Bond 001</h3><span class="note">4 load together on first message · 2 excluded (gated)</span></div>
     <div class="grid">
-      <div class="card"><div class="head"><div class="badge">Q</div><div><div class="t">Qwen2.5-7B-Instruct</div><div class="s">7B · Alibaba · ungated · strong tool-use</div></div><span class="statepill warn"><span class="d"></span>recommended</span></div><div class="foot">Default pick — fast enough to conserve GPU-hours, strong at tool-calling for the agent layer</div></div>
-      <div class="card"><div class="head"><div class="badge">Φ</div><div><div class="t">Phi-3.5-mini-instruct</div><div class="s">3.8B · microsoft · ungated</div></div><span class="statepill idle"><span class="d"></span>fastest</span></div><div class="foot">Already queued for the first basic load-and-verify test</div></div>
-      <div class="card"><div class="head"><div class="badge">M</div><div><div class="t">Mistral-7B-Instruct-v0.3</div><div class="s">7B · ungated · function-calling</div></div><span class="statepill idle"><span class="d"></span>solid</span></div><div class="foot">Backup candidate — not yet tested</div></div>
-      <div class="card"><div class="head"><div class="badge">L</div><div><div class="t">Llama-3.1-8B-Instruct</div><div class="s">8B · Meta · gated — accept license on HF</div></div><span class="statepill idle"><span class="d"></span>popular</span></div><div class="foot">Requires accepting Meta's license on Hugging Face first</div></div>
-      <div class="card"><div class="head"><div class="badge">G</div><div><div class="t">Gemma-2-9b-it</div><div class="s">9B · Google · gated — accept license on HF</div></div><span class="statepill idle"><span class="d"></span>quality</span></div><div class="foot">Requires accepting Google's license on Hugging Face first</div></div>
-      <div class="card"><div class="head"><div class="badge">Z</div><div><div class="t">Zephyr-7b-beta</div><div class="s">7B · ungated · easy fallback</div></div><span class="statepill idle"><span class="d"></span>fallback</span></div><div class="foot">Easy fallback if the others hit friction</div></div>
+      <div class="card"><div class="head"><div class="badge">Q</div><div><div class="t">Qwen2.5-7B-Instruct</div><div class="s">7B · Alibaba · ungated · strong tool-use</div></div><span class="statepill good"><span class="d"></span>loads on demand</span></div><div class="foot">Strong at tool-calling for the agent layer — pick it in Bond's model selector once loaded</div></div>
+      <div class="card"><div class="head"><div class="badge">Φ</div><div><div class="t">Phi-3.5-mini-instruct</div><div class="s">3.8B · microsoft · ungated</div></div><span class="statepill good"><span class="d"></span>loads on demand</span></div><div class="foot">Smallest/fastest of the four — good for quick replies</div></div>
+      <div class="card"><div class="head"><div class="badge">M</div><div><div class="t">Mistral-7B-Instruct-v0.3</div><div class="s">7B · ungated · function-calling</div></div><span class="statepill good"><span class="d"></span>loads on demand</span></div><div class="foot">Loads alongside the other three, ready to pick</div></div>
+      <div class="card"><div class="head"><div class="badge">Z</div><div><div class="t">Zephyr-7b-beta</div><div class="s">7B · ungated · easy fallback</div></div><span class="statepill good"><span class="d"></span>loads on demand</span></div><div class="foot">Loads alongside the other three, ready to pick</div></div>
+      <div class="card"><div class="head"><div class="badge">L</div><div><div class="t">Llama-3.1-8B-Instruct</div><div class="s">8B · Meta · gated — accept license on HF</div></div><span class="statepill idle"><span class="d"></span>excluded for now</span></div><div class="foot">Needs a license-accepted HF token configured on the Kaggle kernel first — not wired up yet</div></div>
+      <div class="card"><div class="head"><div class="badge">G</div><div><div class="t">Gemma-2-9b-it</div><div class="s">9B · Google · gated — accept license on HF</div></div><span class="statepill idle"><span class="d"></span>excluded for now</span></div><div class="foot">Needs a license-accepted HF token configured on the Kaggle kernel first — not wired up yet</div></div>
     </div>
-    <div class="tip">These six fit comfortably in 4-bit on 16GB of VRAM without burning through the weekly GPU-hour budget too fast. If serving with vLLM, only one is loaded at a time. The real, working Bond 001 ping (a genuine round trip through this exact Kaggle kernel) is the native panel below this dashboard — it's not yet wired to a served model.</div>
+    <div class="tip">The four ungated models load together in one go — roughly 16-20GB of 4-bit weights across the two T4s' combined 32GB. Bond's floating panel (bottom-right) lets you pick which loaded model answers each message. The two gated models are left out of the default load until a licensed HF token is set up on the Kaggle side.</div>
   </div>
 </section>
 
@@ -981,22 +1012,41 @@ st.markdown(
 )
 
 
-def load_bond_model():
-    """Open a persistent kernel and load Qwen2.5-7B-Instruct onto it. Updates
-    session_state on success. Returns (ok, error_message_or_None)."""
+def load_bond_models():
+    """Open a persistent kernel and load all four Bond candidate models onto
+    it. Updates session_state on success. Returns (ok, error_message_or_None).
+    ok is True as long as the kernel came up and ran the load script AT ALL —
+    individual per-model failures are reported separately (bond_failed_models)
+    rather than sinking the whole load, since one gated/broken model
+    shouldn't block the other three from being usable."""
     with st.spinner("Opening a dedicated Kaggle kernel for Bond..."):
         kid, err = open_kernel()
     if not kid:
         return False, f"Couldn't open a kernel: {err}"
     with st.spinner(
-        "Loading Qwen2.5-7B-Instruct onto the Kaggle T4 (installing transformers/bitsandbytes, "
-        "downloading ~5GB of weights, loading in 4-bit) — this really can take a few minutes the "
-        "first time this Kaggle session does it..."
+        f"Loading {len(BOND_MODEL_IDS)} models onto the Kaggle T4s (installing transformers/"
+        "bitsandbytes, downloading ~5GB each, loading in 4-bit) — this really can take several "
+        "minutes the first time this Kaggle session does it..."
     ):
-        lok, lout = run_on_kernel(kid, BOND_LOAD_CODE, timeout=480)
+        lok, lout = run_on_kernel(kid, BOND_LOAD_CODE, timeout=900)
     if lok and "BOND_READY:" in lout:
+        ready_part = lout.split("BOND_READY:", 1)[1]
+        loaded_str = ready_part.split("\n", 1)[0].split("BOND_FAILED:", 1)[0].strip()
+        loaded = [m for m in loaded_str.split(",") if m]
+        failed = {}
+        if "BOND_FAILED:" in lout:
+            failed_str = lout.split("BOND_FAILED:", 1)[1].strip()
+            for pair in failed_str.split(","):
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    failed[k] = v
+        if not loaded:
+            close_kernel(kid)
+            return False, f"None of the {len(BOND_MODEL_IDS)} models loaded:\n\n{lout}"
         st.session_state["bond_kernel_id"] = kid
-        st.session_state["bond_model_name"] = lout.split("BOND_READY:", 1)[1].strip()
+        st.session_state["bond_loaded_models"] = loaded
+        st.session_state["bond_failed_models"] = failed
+        st.session_state["bond_selected_model"] = loaded[0]
         return True, None
     close_kernel(kid)
     return False, f"Model load failed — nothing left running on the kernel:\n\n{lout}"
@@ -1009,13 +1059,24 @@ with st.container(key="bond_fab"):
 if st.session_state.get("bond_panel_open"):
     with st.container(key="bond_panel"):
         st.markdown("### Bond 001")
-        model_loaded = bool(st.session_state.get("bond_kernel_id") and st.session_state.get("bond_model_name"))
+        loaded_models = st.session_state.get("bond_loaded_models", [])
+        model_loaded = bool(st.session_state.get("bond_kernel_id") and loaded_models)
 
         if model_loaded:
-            st.caption(f"● connected — {st.session_state['bond_model_name']}")
+            st.caption(f"● {len(loaded_models)} model(s) ready: {', '.join(loaded_models)}")
+            failed_models = st.session_state.get("bond_failed_models", {})
+            if failed_models:
+                st.caption(f"⚠ didn't load: {', '.join(failed_models.keys())}")
+            st.session_state["bond_selected_model"] = st.selectbox(
+                "Answering with", loaded_models,
+                index=loaded_models.index(st.session_state.get("bond_selected_model", loaded_models[0]))
+                if st.session_state.get("bond_selected_model") in loaded_models else 0,
+                key="bond_model_picker", label_visibility="collapsed",
+            )
         else:
-            st.caption("○ no model loaded — your first message loads it (installs deps, downloads "
-                       "~5GB, ~2-3 min), then answers that same message.")
+            st.caption(f"○ no models loaded — your first message loads all {len(BOND_MODEL_IDS)} "
+                       "(installs deps, downloads ~5GB each, several minutes), then answers with "
+                       "the first one that succeeded.")
 
         for m in st.session_state.get("bond_messages", []):
             st.chat_message(m["role"]).write(m["content"])
@@ -1025,32 +1086,35 @@ if st.session_state.get("bond_panel_open"):
         send_col, unload_col = st.columns([3, 2])
         send_clicked = send_col.button("Send", key="bond_float_send", use_container_width=True)
         if model_loaded:
-            if unload_col.button("Unload", key="bond_float_unload", use_container_width=True):
+            if unload_col.button("Unload all", key="bond_float_unload", use_container_width=True):
                 close_kernel(st.session_state.get("bond_kernel_id"))
                 st.session_state.pop("bond_kernel_id", None)
-                st.session_state.pop("bond_model_name", None)
+                st.session_state.pop("bond_loaded_models", None)
+                st.session_state.pop("bond_failed_models", None)
+                st.session_state.pop("bond_selected_model", None)
                 st.rerun()
 
         if send_clicked and fmsg:
             st.session_state.setdefault("bond_messages", []).append({"role": "user", "content": fmsg})
             if not model_loaded:
-                lok, lerr = load_bond_model()
+                lok, lerr = load_bond_models()
                 if not lok:
-                    st.session_state["bond_messages"].append({"role": "assistant", "content": f"Couldn't load a model to answer that: {lerr}"})
+                    st.session_state["bond_messages"].append({"role": "assistant", "content": f"Couldn't load models to answer that: {lerr}"})
                 model_loaded = lok
             if model_loaded:
-                with st.spinner("Generating on the live Kaggle kernel..."):
+                selected = st.session_state.get("bond_selected_model", st.session_state["bond_loaded_models"][0])
+                with st.spinner(f"Generating with {selected} on the live Kaggle kernel..."):
                     gok, gout = run_on_kernel(
                         st.session_state["bond_kernel_id"],
-                        f"print(bond_generate({json.dumps(fmsg)}))",
+                        f"print(bond_generate({json.dumps(fmsg)}, {json.dumps(selected)}))",
                         timeout=90,
                     )
                 if gok:
-                    st.session_state["bond_messages"].append({"role": "assistant", "content": gout})
+                    st.session_state["bond_messages"].append({"role": "assistant", "content": f"**{selected}:** {gout}"})
                 else:
                     st.session_state["bond_messages"].append({
                         "role": "assistant",
                         "content": f"The model kernel stopped responding — {gout}\n\n"
-                                   "It likely died on the Kaggle side. Click \"Unload\" then send another message to reload.",
+                                   "It likely died on the Kaggle side. Click \"Unload all\" then send another message to reload.",
                     })
             st.rerun()
