@@ -806,10 +806,13 @@ figure{margin:0}
 figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:12px 14px 4px;line-height:1.6}
 .node-box{fill:var(--panel2, #121a16)}
 ::selection{background:var(--nv);color:#0b1400}
-.powerbtn{display:flex;align-items:center;gap:7px;border:1px solid var(--line);border-radius:999px;background:var(--panel);
-  padding:6px 12px;cursor:pointer;font-family:var(--mono);font-size:10.5px;color:var(--muted);transition:border-color .15s}
-.powerbtn:hover{border-color:var(--nv)}
-.powerbtn svg{width:13px;height:13px;stroke:var(--st-crit);fill:none;stroke-width:2}
+.gpuproviders{display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:999px;background:var(--panel);
+  padding:6px 12px;cursor:pointer;font-family:var(--mono);font-size:10px;color:var(--muted);transition:border-color .15s}
+.gpuproviders:hover{border-color:var(--nv)}
+.gplabel{color:var(--faint);letter-spacing:.04em;text-transform:uppercase;font-size:9px;padding-right:8px;border-right:1px solid var(--line)}
+.gpitem{display:flex;align-items:center;gap:5px;white-space:nowrap}
+.gpitem .gpdot{width:6px;height:6px;border-radius:50%;background:var(--faint);opacity:.45;flex:none}
+.gpitem.on .gpdot{background:var(--st-good);opacity:1;box-shadow:0 0 6px rgba(47,179,86,.6)}
 .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(14px);background:var(--raised);
   border:1px solid var(--line);color:var(--ink);font-size:12.5px;padding:12px 18px;border-radius:11px;
   box-shadow:0 16px 40px -10px rgba(0,0,0,.5);opacity:0;pointer-events:none;transition:opacity .25s,transform .25s;
@@ -851,10 +854,13 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
   <div class="right">
     <span class="pill {{PILL_CLASS}}" id="headerGpuPill"><span class="dot"></span><span id="headerGpuText">GPU BACKEND {{STATUS_TEXT}}</span></span>
     <span class="pill"><span class="dot"></span>APP-TRACKED GPU HOURS</span>
-    <button class="powerbtn" id="powerBtn" aria-label="Turn the Kaggle GPU session on or off" title="Turn the Kaggle GPU session on or off">
-      <svg viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M6.3 6.3a8 8 0 1 0 11.4 0"/></svg>
-      KAGGLE GPU
-    </button>
+    <div class="gpuproviders" id="gpuProviders" role="button" tabindex="0" aria-label="GPU backend providers" title="GPU backend providers">
+      <span class="gplabel">NVIDIA GPU</span>
+      <span class="gpitem {{PILL_CLASS}}"><i class="gpdot"></i>Kaggle</span>
+      <span class="gpitem off"><i class="gpdot"></i>AWS</span>
+      <span class="gpitem off"><i class="gpdot"></i>Azure</span>
+      <span class="gpitem off"><i class="gpdot"></i>GCP</span>
+    </div>
     <button class="themebtn" id="themeBtn" aria-label="Toggle bright / dark mode" title="Toggle bright / dark mode">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v3M12 18.5v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2.5 12h3M18.5 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
       <span class="knob"><i></i></span>
@@ -1240,8 +1246,8 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
     clearTimeout(toastTimer);
     toastTimer = setTimeout(function(){ toast.classList.remove('show'); }, 6500);
   }
-  document.getElementById('powerBtn').addEventListener('click', function(){
-    showToast('Kaggle has no API to start or stop a session remotely — that\'s a Kaggle limitation, not this page\'s. Go start/stop it on kaggle.com directly, then reconnect here with the fresh tunnel URL/token.');
+  document.getElementById('gpuProviders').addEventListener('click', function(){
+    showToast('Kaggle is the only backend actually wired up right now — AWS/Azure/GCP are shown for the roadmap, not connected. Kaggle also has no API to start or stop a session remotely; go start/stop it on kaggle.com directly, then reconnect here with the fresh tunnel URL/token.');
   });
 
   var recheckBtn = document.getElementById('recheckBtn');
