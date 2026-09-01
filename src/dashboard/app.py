@@ -54,7 +54,7 @@ NVIDIA_ICON_DATA_URI = (
 )
 
 st.set_page_config(
-    page_title="NVIDIA Command Center — live",
+    page_title="NVIDIA Intelligent Cloud Control",
     page_icon=Image.open(NVIDIA_ICON_PATH),
     layout="wide",
 )
@@ -889,9 +889,6 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
 </style>
 
 <nav class="rail">
-  <div class="mark" title="NVIDIA Command Center">
-    <img class="nvidia-eye" src="{{NVIDIA_ICON_DATA_URI}}" alt="NVIDIA"/>
-  </div>
   <button class="nav active" data-view="overview"><span class="ico"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="5" rx="1.5"/><rect x="13" y="10" width="8" height="11" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/></svg></span><span class="cap">Overview</span></button>
   <button class="nav" data-view="topology"><span class="ico"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.3"/><circle cx="19" cy="6" r="2.3"/><circle cx="19" cy="18" r="2.3"/><path d="M7 12 L16.7 7 M7 12 L16.7 17"/></svg></span><span class="cap">Topology</span></button>
   <button class="nav" data-view="gpu"><span class="ico"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 6V3M12 6V3M17 6V3M7 21v-3M12 21v-3M17 21v-3"/></svg></span><span class="cap">GPU</span></button>
@@ -908,7 +905,7 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
   <div class="brand">
     <img class="nvidia-eye" src="{{NVIDIA_ICON_DATA_URI}}" alt="NVIDIA"/>
     <div class="titles">
-      <h1>NVIDIA <span class="g">Command Center</span></h1>
+      <h1>NVIDIA <span class="g">Intelligent Cloud Control</span></h1>
       <div class="crumb">nvidia · cuda · agentic gpu infrastructure</div>
     </div>
   </div>
@@ -933,7 +930,7 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
 
 <section class="view active" id="overview">
   <div class="lead">
-    <h2><span class="g">NVIDIA</span> Command Center</h2>
+    <h2><span class="g">NVIDIA</span> Intelligent Cloud Control</h2>
     <p>A control plane for a Kaggle-hosted GPU rig, wired up from a Mac via VS Code — real CUDA, real PyTorch, an agentic layer being built on top. This view shows what's actually confirmed working versus what's still a placeholder; nothing here is simulated data dressed up as live telemetry. The GPU status below is a live server checking your kernel right now, not a static demo.</p>
   </div>
 
