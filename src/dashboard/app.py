@@ -96,8 +96,23 @@ st.markdown(f"<style>{_chrome_css}</style>", unsafe_allow_html=True)
 # --- Connection state: read from the URL's query params, not session_state,
 # so a page REFRESH (not just a rerun) keeps it and re-checks automatically.
 params = st.query_params
-jupyter_url = st.secrets.get("JUPYTER_URL", params.get("jupyter_url", ""))
-jupyter_token = st.secrets.get("JUPYTER_TOKEN", params.get("jupyter_token", ""))
+
+
+def get_secret(name: str, default=""):
+    """Read a Streamlit secret without requiring a local secrets.toml.
+
+    Streamlit Cloud always has the secrets file, while a fresh local checkout
+    may not.  In that case the dashboard should still open and show its normal
+    connection form instead of crashing before the UI renders.
+    """
+    try:
+        return st.secrets.get(name, default)
+    except FileNotFoundError:
+        return default
+
+
+jupyter_url = get_secret("JUPYTER_URL", params.get("jupyter_url", ""))
+jupyter_token = get_secret("JUPYTER_TOKEN", params.get("jupyter_token", ""))
 
 # --- Kaggle API wake trigger + activity-based keep-alive -------------------
 # Auto-wakes Kaggle by triggering a fresh run via its REST API (kaggle kernels
@@ -107,7 +122,7 @@ jupyter_token = st.secrets.get("JUPYTER_TOKEN", params.get("jupyter_token", ""))
 # actually used the dashboard for a while, instead of a flat multi-hour
 # reservation. Every real kernel call below (status check, Bond messages)
 # touches that same file so real usage keeps the session alive naturally.
-KAGGLE_API_TOKEN = st.secrets.get("KAGGLE_API_TOKEN", "")
+KAGGLE_API_TOKEN = get_secret("KAGGLE_API_TOKEN", "")
 KAGGLE_KERNEL = "confidentialnvidia/confidential-nvidia-cuda-01"
 KAGGLE_KERNEL_PATH = "kaggle_kernel"  # relative to this deployed repo's root
 KAGGLE_WORKDIR = "/kaggle/working/AI_Lab"
@@ -135,7 +150,7 @@ def wake_kaggle():
     Returns (ok, message)."""
     if not KAGGLE_API_TOKEN:
         return False, "Kaggle API token isn't configured (KAGGLE_API_TOKEN secret)."
-    ngrok_authtoken = st.secrets.get("NGROK_AUTHTOKEN", "")
+    ngrok_authtoken = get_secret("NGROK_AUTHTOKEN", "")
     if not jupyter_token or not ngrok_authtoken:
         return False, "JUPYTER_TOKEN and/or NGROK_AUTHTOKEN secrets aren't configured."
 
@@ -725,7 +740,7 @@ h1,h2,h3{font-family:var(--display);text-wrap:balance;margin:0}
 @media (prefers-reduced-motion: reduce){*{animation-duration:.001ms !important;transition-duration:.001ms !important}}
 nav.rail{background:linear-gradient(180deg,#080b09,#030403);border-right:1px solid var(--line);
   display:flex;flex-direction:column;align-items:center;padding:16px 0 14px;gap:4px;overflow-y:auto}
-.mark{width:44px;height:44px;border-radius:11px;margin-bottom:14px;flex:none;position:relative}
+.mark{width:56px;height:44px;border-radius:11px;margin-bottom:14px;flex:none;position:relative}
 .mark svg{width:100%;height:100%;display:block}
 .rail button.nav{width:60px;padding:9px 0;border-radius:11px;border:1px solid transparent;background:transparent;
   color:var(--faint);cursor:pointer;display:grid;place-items:center;gap:4px;position:relative;
@@ -743,6 +758,7 @@ header.top{height:62px;flex:none;border-bottom:1px solid var(--line);display:fle
   padding:0 clamp(16px,3vw,36px);background:linear-gradient(90deg,var(--panel),transparent)}
 header .brand{display:flex;align-items:center;gap:10px}
 header .brand svg{width:26px;height:26px;flex:none}
+.nvidia-eye{filter:drop-shadow(0 0 9px var(--nv-glow))}
 header .titles{display:flex;flex-direction:column;gap:1px;justify-content:center}
 header h1{font-size:15.5px;font-weight:650;letter-spacing:.01em}
 header h1 .g{color:var(--nv-hi)}
@@ -828,6 +844,18 @@ header .right{margin-left:auto;display:flex;gap:10px;align-items:center;flex-wra
 .tbl tr:last-child td{border-bottom:none}
 .scroll-x{overflow-x:auto}
 .topo-wrap{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:8px}
+.neural-fabric{position:relative;overflow:hidden;background:linear-gradient(135deg,var(--panel),color-mix(in srgb,var(--panel2) 72%,transparent));border:1px solid var(--line);border-radius:16px;padding:18px 20px 15px;margin:0 0 28px;isolation:isolate}
+.neural-fabric::before{content:"";position:absolute;inset:0;background-image:linear-gradient(var(--line-soft) 1px,transparent 1px),linear-gradient(90deg,var(--line-soft) 1px,transparent 1px);background-size:42px 42px;opacity:.24;z-index:-2}
+.neural-fabric::after{content:"";position:absolute;width:340px;height:340px;left:50%;top:52%;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,var(--nv-glow),transparent 67%);filter:blur(4px);z-index:-1;animation:fabric-breathe 4.8s ease-in-out infinite}
+.fabric-head{display:flex;align-items:flex-start;gap:16px;margin-bottom:10px}.fabric-head h3{font-size:17px}.fabric-kicker{font:9px var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--faint);margin-top:4px}.fabric-live{margin-left:auto;font:9.5px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--st-good);white-space:nowrap}.fabric-live::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:currentColor;box-shadow:0 0 9px currentColor;margin-right:7px;animation:live-pulse 1.5s ease-in-out infinite}
+.fabric-stage{position:relative;height:260px}.fabric-stage svg{width:100%;height:100%;overflow:visible}.fabric-link{fill:none;stroke:var(--line);stroke-width:1.2}.fabric-flow{fill:none;stroke:url(#signalGradient);stroke-width:2;stroke-linecap:round;stroke-dasharray:7 18;animation:signal-flow 2.1s linear infinite}.fabric-flow.delay{animation-delay:-1.05s}.fabric-node circle.outer{fill:var(--panel);stroke:var(--nv);stroke-width:1.4;filter:drop-shadow(0 0 8px var(--nv-glow))}.fabric-node circle.core{fill:var(--nv);opacity:.88}.fabric-node text{font-family:var(--mono);fill:var(--ink);font-size:10px;text-anchor:middle}.fabric-node text.sub{fill:var(--faint);font-size:7.5px;letter-spacing:.08em}.fabric-node text.live{fill:var(--st-good)}.fabric-node.primary circle.outer{stroke-width:2;animation:node-orbit 3.8s ease-in-out infinite}.fabric-node.primary circle.core{animation:core-pulse 1.8s ease-in-out infinite}.spark{fill:var(--nv-hi);filter:drop-shadow(0 0 5px var(--nv));animation:spark-hop 2.4s ease-in-out infinite}.fabric-caption{display:flex;justify-content:space-between;gap:12px;border-top:1px solid var(--line-soft);padding-top:10px;font:9px var(--mono);color:var(--faint);letter-spacing:.07em;text-transform:uppercase}.fabric-caption b{color:var(--nv-hi);font-weight:500}
+@keyframes signal-flow{to{stroke-dashoffset:-50}}
+@keyframes fabric-breathe{0%,100%{opacity:.46;transform:translate(-50%,-50%) scale(.86)}50%{opacity:1;transform:translate(-50%,-50%) scale(1.08)}}
+@keyframes live-pulse{50%{opacity:.35;transform:scale(.72)}}
+@keyframes node-orbit{50%{stroke:var(--nv-hi);filter:drop-shadow(0 0 16px var(--nv-glow))}}
+@keyframes core-pulse{50%{r:8;opacity:.42}}
+@keyframes spark-hop{0%,100%{opacity:.25}50%{opacity:1}}
+@media(max-width:760px){.fabric-stage{height:340px}.fabric-stage svg{transform:scale(1.12)}.fabric-caption{flex-direction:column}.fabric-head{flex-wrap:wrap}.fabric-live{margin-left:0;width:100%}}
 figure{margin:0}
 figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:12px 14px 4px;line-height:1.6}
 .node-box{fill:var(--panel2, #121a16)}
@@ -848,10 +876,9 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
 </style>
 
 <nav class="rail">
-  <div class="mark" title="MI Command Center">
-    <svg viewBox="0 0 44 44" role="img" aria-label="MI Command Center mark">
-      <polygon points="22,3 39,13 39,31 22,41 5,31 5,13" fill="var(--nv-dim)" stroke="var(--nv)" stroke-width="1.4"/>
-      <path d="M13 27 L18 16 L22 24 L26 15 L31 27" fill="none" stroke="var(--nv-hi)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <div class="mark" title="NVIDIA Command Center">
+    <svg class="nvidia-eye" viewBox="0 0 64 44" role="img" aria-label="NVIDIA">
+      <path fill="var(--nv)" d="M5 22C14 9 30 5 46 12c5 2 9 6 13 10-5 6-11 10-18 12-12 3-25-1-36-12Zm8 0c8 8 19 11 29 7 4-1 7-4 10-7-7-7-16-10-25-7-6 1-10 4-14 7Zm8 0c5-5 13-6 19-2 1 1 3 2 4 3-4 4-10 6-15 4-4-1-6-3-8-5Zm8 0a6 6 0 1 0 12 0 6 6 0 0 0-12 0Z"/>
     </svg>
   </div>
   <button class="nav active" data-view="overview"><span class="ico"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="5" rx="1.5"/><rect x="13" y="10" width="8" height="11" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/></svg></span><span class="cap">Overview</span></button>
@@ -868,12 +895,11 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
 <main>
 <header class="top">
   <div class="brand">
-    <svg viewBox="0 0 44 44" role="img" aria-label="MI Command Center mark">
-      <polygon points="22,3 39,13 39,31 22,41 5,31 5,13" fill="var(--nv-dim)" stroke="var(--nv)" stroke-width="1.4"/>
-      <path d="M13 27 L18 16 L22 24 L26 15 L31 27" fill="none" stroke="var(--nv-hi)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <svg class="nvidia-eye" viewBox="0 0 64 44" role="img" aria-label="NVIDIA">
+      <path fill="var(--nv)" d="M5 22C14 9 30 5 46 12c5 2 9 6 13 10-5 6-11 10-18 12-12 3-25-1-36-12Zm8 0c8 8 19 11 29 7 4-1 7-4 10-7-7-7-16-10-25-7-6 1-10 4-14 7Zm8 0c5-5 13-6 19-2 1 1 3 2 4 3-4 4-10 6-15 4-4-1-6-3-8-5Zm8 0a6 6 0 1 0 12 0 6 6 0 0 0-12 0Z"/>
     </svg>
     <div class="titles">
-      <h1>MI <span class="g">Command Center</span></h1>
+      <h1>NVIDIA <span class="g">Command Center</span></h1>
       <div class="crumb">nvidia · cuda · agentic gpu infrastructure</div>
     </div>
   </div>
@@ -898,8 +924,37 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
 
 <section class="view active" id="overview">
   <div class="lead">
-    <h2><span class="g">MI</span> Command Center</h2>
+    <h2><span class="g">NVIDIA</span> Command Center</h2>
     <p>A control plane for a Kaggle-hosted GPU rig, wired up from a Mac via VS Code — real CUDA, real PyTorch, an agentic layer being built on top. This view shows what's actually confirmed working versus what's still a placeholder; nothing here is simulated data dressed up as live telemetry. The GPU status below is a live server checking your kernel right now, not a static demo.</p>
+  </div>
+
+  <div class="neural-fabric" aria-label="Animated NVIDIA neural compute fabric">
+    <div class="fabric-head">
+      <div><h3>NVIDIA Neural Compute Fabric</h3><div class="fabric-kicker">intent → orchestration → accelerated intelligence → outcomes</div></div>
+      <div class="fabric-live">fabric {{STATUS_TEXT_LOWER}}</div>
+    </div>
+    <div class="fabric-stage">
+      <svg viewBox="0 0 1000 260" role="img" aria-label="Live animated neural network linking the dashboard, control plane, CUDA cores, AI models, agents, and application outputs">
+        <defs><linearGradient id="signalGradient" x1="0" x2="1"><stop offset="0" stop-color="var(--c-aqua)"/><stop offset=".5" stop-color="var(--nv-hi)"/><stop offset="1" stop-color="var(--c-blue)"/></linearGradient></defs>
+        <g>
+          <path class="fabric-link" d="M90 130C175 130 195 70 275 70S390 130 500 130 625 60 720 60 830 105 915 105"/>
+          <path class="fabric-link" d="M90 130C175 130 195 190 275 190S390 130 500 130 625 200 720 200 830 155 915 155"/>
+          <path class="fabric-link" d="M275 70C360 70 395 200 500 130M275 190C360 190 395 60 500 130M720 60C790 60 835 155 915 155M720 200C790 200 835 105 915 105"/>
+          <path class="fabric-flow" d="M90 130C175 130 195 70 275 70S390 130 500 130 625 60 720 60 830 105 915 105"/>
+          <path class="fabric-flow delay" d="M90 130C175 130 195 190 275 190S390 130 500 130 625 200 720 200 830 155 915 155"/>
+          <circle class="spark" cx="186" cy="89" r="3"/><circle class="spark" cx="392" cy="151" r="3" style="animation-delay:-.8s"/><circle class="spark" cx="616" cy="90" r="3" style="animation-delay:-1.5s"/><circle class="spark" cx="820" cy="129" r="3" style="animation-delay:-2s"/>
+        </g>
+        <g class="fabric-node" transform="translate(90 130)"><circle class="outer" r="39"/><circle class="core" r="5"/><text y="-7">STREAMLIT</text><text class="sub live" y="18">LIVE INPUT</text></g>
+        <g class="fabric-node" transform="translate(275 70)"><circle class="outer" r="37"/><circle class="core" r="5"/><text y="-7">CONTROL</text><text class="sub" y="18">JUPYTER</text></g>
+        <g class="fabric-node" transform="translate(275 190)"><circle class="outer" r="37"/><circle class="core" r="5"/><text y="-7">KAGGLE</text><text class="sub" y="18">GPU RUNTIME</text></g>
+        <g class="fabric-node primary" transform="translate(500 130)"><circle class="outer" r="52"/><circle class="core" r="6"/><text y="-9" style="font-size:12px;font-weight:600">CUDA CORE</text><text class="sub" y="17">TESLA T4 × 2</text></g>
+        <g class="fabric-node" transform="translate(720 60)"><circle class="outer" r="37"/><circle class="core" r="5"/><text y="-7">MODELS</text><text class="sub" y="18">4-BIT LLM</text></g>
+        <g class="fabric-node" transform="translate(720 200)"><circle class="outer" r="37"/><circle class="core" r="5"/><text y="-7">AGENTS</text><text class="sub" y="18">ORCHESTRATE</text></g>
+        <g class="fabric-node" transform="translate(915 105)"><circle class="outer" r="33"/><circle class="core" r="4"/><text y="-6">BOND 001</text><text class="sub" y="16">INFERENCE</text></g>
+        <g class="fabric-node" transform="translate(915 155)"><circle class="outer" r="33"/><circle class="core" r="4"/><text y="-6">INSIGHTS</text><text class="sub" y="16">OUTPUT</text></g>
+      </svg>
+    </div>
+    <div class="fabric-caption"><span><b>signals in motion</b> · requests flow across the fabric</span><span>real topology · status-aware · GPU accelerated</span></div>
   </div>
 
   <div class="group">
