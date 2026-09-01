@@ -33,18 +33,31 @@
 #   streamlit run app.py
 
 import datetime
+import base64
 import json
 import os
 import re
 import subprocess
 import time
 import uuid
+from pathlib import Path
 
 import requests
 import streamlit as st
 import streamlit.components.v1 as components
+from PIL import Image
 
-st.set_page_config(page_title="MI Command Center — live", page_icon="\U0001F5A5️", layout="wide")
+ASSET_DIR = Path(__file__).resolve().parent / "assets"
+NVIDIA_ICON_PATH = ASSET_DIR / "nvidia-favicon.png"
+NVIDIA_ICON_DATA_URI = (
+    "data:image/png;base64," + base64.b64encode(NVIDIA_ICON_PATH.read_bytes()).decode("ascii")
+)
+
+st.set_page_config(
+    page_title="NVIDIA Command Center — live",
+    page_icon=Image.open(NVIDIA_ICON_PATH),
+    layout="wide",
+)
 
 # A real (if unglamorous) way for a button INSIDE the decorative dashboard's
 # iframe to trigger a real Python-side action: it navigates the REAL outer
@@ -741,7 +754,7 @@ h1,h2,h3{font-family:var(--display);text-wrap:balance;margin:0}
 nav.rail{background:linear-gradient(180deg,#080b09,#030403);border-right:1px solid var(--line);
   display:flex;flex-direction:column;align-items:center;padding:16px 0 14px;gap:4px;overflow-y:auto}
 .mark{width:56px;height:44px;border-radius:11px;margin-bottom:14px;flex:none;position:relative}
-.mark svg{width:100%;height:100%;display:block}
+.mark img{width:100%;height:100%;display:block;object-fit:contain}
 .rail button.nav{width:60px;padding:9px 0;border-radius:11px;border:1px solid transparent;background:transparent;
   color:var(--faint);cursor:pointer;display:grid;place-items:center;gap:4px;position:relative;
   transition:color .15s,background .15s;font-family:var(--body)}
@@ -757,7 +770,7 @@ main{overflow:hidden;display:flex;flex-direction:column;min-width:0}
 header.top{height:62px;flex:none;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:16px;
   padding:0 clamp(16px,3vw,36px);background:linear-gradient(90deg,var(--panel),transparent)}
 header .brand{display:flex;align-items:center;gap:10px}
-header .brand svg{width:26px;height:26px;flex:none}
+header .brand img{width:30px;height:30px;object-fit:contain;flex:none}
 .nvidia-eye{filter:drop-shadow(0 0 9px var(--nv-glow))}
 header .titles{display:flex;flex-direction:column;gap:1px;justify-content:center}
 header h1{font-size:15.5px;font-weight:650;letter-spacing:.01em}
@@ -877,9 +890,7 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
 
 <nav class="rail">
   <div class="mark" title="NVIDIA Command Center">
-    <svg class="nvidia-eye" viewBox="0 0 64 44" role="img" aria-label="NVIDIA">
-      <path fill="var(--nv)" d="M5 22C14 9 30 5 46 12c5 2 9 6 13 10-5 6-11 10-18 12-12 3-25-1-36-12Zm8 0c8 8 19 11 29 7 4-1 7-4 10-7-7-7-16-10-25-7-6 1-10 4-14 7Zm8 0c5-5 13-6 19-2 1 1 3 2 4 3-4 4-10 6-15 4-4-1-6-3-8-5Zm8 0a6 6 0 1 0 12 0 6 6 0 0 0-12 0Z"/>
-    </svg>
+    <img class="nvidia-eye" src="{{NVIDIA_ICON_DATA_URI}}" alt="NVIDIA"/>
   </div>
   <button class="nav active" data-view="overview"><span class="ico"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="3" width="8" height="5" rx="1.5"/><rect x="13" y="10" width="8" height="11" rx="1.5"/><rect x="3" y="13" width="8" height="8" rx="1.5"/></svg></span><span class="cap">Overview</span></button>
   <button class="nav" data-view="topology"><span class="ico"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.3"/><circle cx="19" cy="6" r="2.3"/><circle cx="19" cy="18" r="2.3"/><path d="M7 12 L16.7 7 M7 12 L16.7 17"/></svg></span><span class="cap">Topology</span></button>
@@ -895,9 +906,7 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
 <main>
 <header class="top">
   <div class="brand">
-    <svg class="nvidia-eye" viewBox="0 0 64 44" role="img" aria-label="NVIDIA">
-      <path fill="var(--nv)" d="M5 22C14 9 30 5 46 12c5 2 9 6 13 10-5 6-11 10-18 12-12 3-25-1-36-12Zm8 0c8 8 19 11 29 7 4-1 7-4 10-7-7-7-16-10-25-7-6 1-10 4-14 7Zm8 0c5-5 13-6 19-2 1 1 3 2 4 3-4 4-10 6-15 4-4-1-6-3-8-5Zm8 0a6 6 0 1 0 12 0 6 6 0 0 0-12 0Z"/>
-    </svg>
+    <img class="nvidia-eye" src="{{NVIDIA_ICON_DATA_URI}}" alt="NVIDIA"/>
     <div class="titles">
       <h1>NVIDIA <span class="g">Command Center</span></h1>
       <div class="crumb">nvidia · cuda · agentic gpu infrastructure</div>
@@ -1422,6 +1431,7 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
 """
 
 html = HTML_TEMPLATE
+html = html.replace("{{NVIDIA_ICON_DATA_URI}}", NVIDIA_ICON_DATA_URI)
 html = html.replace("{{PILL_CLASS}}", pill_class)
 html = html.replace("{{STATUS_TEXT}}", status_text)
 html = html.replace("{{STATUS_TEXT_LOWER}}", "confirmed live" if online else "not reachable right now")
