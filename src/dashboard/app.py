@@ -37,7 +37,9 @@ import base64
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -167,9 +169,6 @@ def wake_kaggle():
     if not jupyter_token or not ngrok_authtoken:
         return False, "JUPYTER_TOKEN and/or NGROK_AUTHTOKEN secrets aren't configured."
 
-    import shutil
-    import tempfile
-
     src_dir = KAGGLE_KERNEL_PATH
     nb_name = "confidential-nvidia-cuda-01.ipynb"
     try:
@@ -201,6 +200,135 @@ def wake_kaggle():
     if r.returncode != 0:
         return False, f"Kaggle push failed:\n{r.stdout}\n{r.stderr}"
     return True, "Kernel run triggered — this takes roughly 1-2 minutes before the tunnel comes up."
+
+
+def get_kaggle_status():
+    """Ask Kaggle itself what the last triggered run is actually doing --
+    the real ground truth ('running', 'queued', 'complete', 'error', ...),
+    not a guess from the tunnel being unreachable. A push returning
+    successfully only means the upload was accepted; it says nothing about
+    whether the run itself is booting, still going, or already crashed --
+    this is what closes that gap.
+
+    Returns (status, raw_output). status is 'unknown' if the check itself
+    couldn't be completed (no token, no network, unparseable output)."""
+    if not KAGGLE_API_TOKEN:
+        return "unknown", "Kaggle API token isn't configured."
+    env = {**os.environ, "KAGGLE_API_TOKEN": KAGGLE_API_TOKEN}
+    try:
+        r = subprocess.run(
+            ["kaggle", "kernels", "status", KAGGLE_KERNEL],
+            capture_output=True, text=True, timeout=20, env=env,
+        )
+    except Exception as e:
+        return "unknown", f"Couldn't reach Kaggle's API: {e}"
+    raw = ((r.stdout or "") + (r.stderr or "")).strip()
+    if r.returncode != 0:
+        return "unknown", raw or "status check failed"
+    m = re.search(r'has status "?([a-zA-Z]+)"?', raw)
+    return (m.group(1).lower() if m else "unknown"), raw
+
+
+def get_kaggle_error_log(max_chars: int = 2000) -> str:
+    """Pull the tail of the actual run log from Kaggle's own API -- used
+    when get_kaggle_status() reports 'error', so the dashboard can show the
+    real crash reason (a dropped import, a bad substitution, an OOM, quota
+    hit, ...) instead of leaving the user to guess or dig through the
+    Kaggle website by hand. Best-effort: returns '' on any failure rather
+    than raising, since this is a diagnostic extra, not the wake path
+    itself."""
+    if not KAGGLE_API_TOKEN:
+        return ""
+    env = {**os.environ, "KAGGLE_API_TOKEN": KAGGLE_API_TOKEN}
+    tmp_dir = tempfile.mkdtemp(prefix="kaggle_log_")
+    try:
+        subprocess.run(
+            ["kaggle", "kernels", "output", KAGGLE_KERNEL, "-p", tmp_dir],
+            capture_output=True, text=True, timeout=30, env=env,
+        )
+        log_files = sorted(Path(tmp_dir).glob("*.log"))
+        if not log_files:
+            return ""
+        text = log_files[0].read_text(encoding="utf-8", errors="replace")
+        return text[-max_chars:]
+    except Exception:
+        return ""
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+# --- GPU provider registry --------------------------------------------------
+# Kaggle is the only backend actually wired up today (KaggleGPUProvider wraps
+# the wake/status/log functions above, unchanged behavior). This registry
+# exists so that adding a second real backend -- Azure, AWS, or GCP spot GPUs
+# -- later means writing one class with wake()/get_status() and registering
+# it below, not touching the wake/status/UI plumbing that already works for
+# Kaggle. UnconfiguredGPUProvider is a real, honest placeholder (never claims
+# to be online or wired up) rather than hardcoding "Azure/AWS/GCP" strings
+# wherever the dashboard currently checks for Kaggle specifically.
+class GPUProvider:
+    """Interface a GPU backend implements to plug into the dashboard's
+    wake/status flow."""
+
+    name = "unknown"
+
+    def is_configured(self) -> bool:
+        raise NotImplementedError
+
+    def wake(self):
+        """Returns (ok: bool, message: str)."""
+        raise NotImplementedError
+
+    def get_status(self):
+        """Returns (status: str, raw_output: str)."""
+        raise NotImplementedError
+
+
+class KaggleGPUProvider(GPUProvider):
+    name = "Kaggle"
+
+    def is_configured(self) -> bool:
+        return bool(KAGGLE_API_TOKEN)
+
+    def wake(self):
+        return wake_kaggle()
+
+    def get_status(self):
+        return get_kaggle_status()
+
+    def get_error_log(self, max_chars: int = 2000) -> str:
+        return get_kaggle_error_log(max_chars)
+
+
+class UnconfiguredGPUProvider(GPUProvider):
+    """Placeholder for a cloud GPU backend (Azure/AWS/GCP) that isn't wired
+    up yet -- see the multi-provider roadmap item in
+    ai-infra-agent-platform.md. Always reports itself as unconfigured and
+    never claims to have woken or checked anything real."""
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def is_configured(self) -> bool:
+        return False
+
+    def wake(self):
+        return False, f"{self.name} isn't wired up yet — no credentials or trigger mechanism configured."
+
+    def get_status(self):
+        return "not_configured", f"{self.name} isn't wired up yet."
+
+
+GPU_PROVIDERS = {
+    "kaggle": KaggleGPUProvider(),
+    "azure": UnconfiguredGPUProvider("Azure"),
+    "aws": UnconfiguredGPUProvider("AWS"),
+    "gcp": UnconfiguredGPUProvider("GCP"),
+}
+# Which provider the dashboard's wake/status flow actually drives today.
+# Swapping this later (once a real Azure/AWS/GCP provider is registered
+# above) is a one-line config change, not a rewrite.
+ACTIVE_GPU_PROVIDER = get_secret("GPU_PROVIDER", "kaggle")
 
 
 def run_remote(code: str, timeout: int = 20):
@@ -628,21 +756,53 @@ if info_ok:
 
 online = bool(info_ok and info and info.get("cuda_available"))
 
-# --- Auto-wake: if we're offline, trigger Kaggle automatically -- no button
-# needed. Cooldown via session_state so a page that keeps refreshing while
-# Kaggle is still booting (which takes ~1-2 min) doesn't fire a fresh push
-# on every single reload.
+# --- Auto-wake: if we're offline, trigger the active GPU provider
+# automatically -- no button needed. Routed through GPU_PROVIDERS so this
+# same block drives whichever provider is active (still only Kaggle for
+# real today; Azure/AWS/GCP would plug in here once wired up, no changes
+# needed to this logic).
+#
+# Real fix (2026-09-01): this used to push a fresh trigger purely on a
+# 180s cooldown, with no idea whether the *previous* trigger was still
+# actually booting. That's a genuine bug, not just a cosmetic gap: Kaggle's
+# own boot-to-tunnel time (~1-2 min) is close enough to the old 180s
+# cooldown that a slightly slow boot would get hit with ANOTHER push before
+# it finished -- restarting the container and never actually reaching the
+# tunnel-launch cell. Matches exactly what was observed: "Auto-wake
+# triggered" showing while the backend stayed offline indefinitely. Now we
+# ask Kaggle's own status first and only push when nothing is already in
+# flight.
+active_provider = GPU_PROVIDERS.get(ACTIVE_GPU_PROVIDER, GPU_PROVIDERS["kaggle"])
 wake_message = None
-if not online and KAGGLE_API_TOKEN:
-    last_wake = st.session_state.get("last_wake_trigger_at", 0)
-    WAKE_COOLDOWN_SECONDS = 180
-    if time.time() - last_wake > WAKE_COOLDOWN_SECONDS:
-        wake_ok, wake_msg = wake_kaggle()
-        st.session_state["last_wake_trigger_at"] = time.time()
-        wake_message = (wake_ok, wake_msg)
+provider_status, provider_status_raw = ("unknown", "")
+provider_error_log = ""
+if not online and active_provider.is_configured():
+    provider_status, provider_status_raw = active_provider.get_status()
+
+    if provider_status in ("running", "queued"):
+        # A run is already in flight -- pushing again would restart it, not
+        # help it. Just report the real status and wait.
+        wake_message = (
+            True,
+            f'{active_provider.name} already reports status "{provider_status}" from the last '
+            "trigger — not pushing again (that would restart the container and lose "
+            'progress). Give it a bit longer, then hit "Recheck now."',
+        )
     else:
-        wait_left = int(WAKE_COOLDOWN_SECONDS - (time.time() - last_wake))
-        wake_message = (True, f"Already triggered a wake-up recently — give it up to {wait_left}s more, then refresh.")
+        last_wake = st.session_state.get("last_wake_trigger_at", 0)
+        WAKE_COOLDOWN_SECONDS = 240
+        if time.time() - last_wake > WAKE_COOLDOWN_SECONDS:
+            wake_ok, wake_msg = active_provider.wake()
+            st.session_state["last_wake_trigger_at"] = time.time()
+            if wake_ok:
+                wake_msg += f' (last known status before this push: "{provider_status}")'
+            wake_message = (wake_ok, wake_msg)
+        else:
+            wait_left = int(WAKE_COOLDOWN_SECONDS - (time.time() - last_wake))
+            wake_message = (True, f"Already triggered a wake-up recently — give it up to {wait_left}s more, then refresh.")
+
+    if provider_status == "error" and hasattr(active_provider, "get_error_log"):
+        provider_error_log = active_provider.get_error_log()
 
 smi_text = (info or {}).get("smi", "") or info_out
 driver_m = re.search(r"Driver Version:\s*([\d.]+)", smi_text or "")
@@ -680,9 +840,27 @@ else:
         )
     else:
         wake_html = (
-            '<div class="tip warn">Auto-wake isn\'t configured (no KAGGLE_API_TOKEN secret set) — '
-            "wake it manually from the Kaggle notebook instead.</div>"
+            f'<div class="tip warn">Auto-wake isn\'t configured for {esc(active_provider.name)} — '
+            "wake it manually instead.</div>"
         )
+
+    # Real, provider-reported status -- replaces the old "stale tunnel, bad
+    # token, or stopped session" guess with what the provider actually says
+    # is happening right now.
+    status_note_html = ""
+    if provider_status != "unknown":
+        status_note_html = (
+            f'<div class="tip">{esc(active_provider.name)} itself reports status '
+            f'<b>"{esc(provider_status)}"</b> for the last triggered run.</div>'
+        )
+    error_log_html = ""
+    if provider_error_log:
+        error_log_html = f"""
+      <div class="tip warn"><b>Real crash log from the last run (status: error):</b></div>
+      <pre style="font-family:var(--mono);font-size:10.5px;color:var(--muted);background:var(--panel2);
+        border:1px solid var(--line);border-radius:8px;padding:10px 12px;max-height:220px;overflow:auto;margin:0">{esc(provider_error_log)}</pre>
+    """
+
     sync_html = f"""
       <div class="syncbox-row">
         <span class="pill off"><span class="dot"></span>GPU BACKEND OFFLINE — real check, {esc(checked_at)}</span>
@@ -691,7 +869,9 @@ else:
       <pre style="font-family:var(--mono);font-size:10.5px;color:var(--muted);background:var(--panel2);
         border:1px solid var(--line);border-radius:8px;padding:10px 12px;max-height:160px;overflow:auto;margin:0">{esc(str(info_out))[:1200]}</pre>
       {wake_html}
-      <div class="tip warn">This is the real reason it's offline — a stale/expired tunnel URL, the Kaggle session having stopped, or a bad token. If auto-wake was just triggered, wait ~1-2 min and hit "Recheck now" — don't need to touch the Kaggle notebook manually unless auto-wake fails.</div>
+      {status_note_html}
+      {error_log_html}
+      <div class="tip warn">Tunnel check failure reason above is usually just "no tunnel yet" while a run boots or before one's been triggered — the status line above (when available) is the real ground truth for what {esc(active_provider.name)} itself is doing, not a guess.</div>
     """
 
 HTML_TEMPLATE = r"""
