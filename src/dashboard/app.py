@@ -39,6 +39,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -48,6 +49,11 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image
+
+# Community Cloud executes the entry point from the repository root. Add the
+# script directory explicitly so the sibling authentication module resolves
+# consistently in both local and hosted launches.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from viewer_portal import require_viewer
 
 ASSET_DIR = Path(__file__).resolve().parent / "assets"
