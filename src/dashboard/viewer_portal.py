@@ -77,7 +77,6 @@ def require_viewer() -> dict[str, str]:
 
     _login_scene()
     remember = st.checkbox("Remember this trusted device for 30 days", value=False)
-    authenticator = stauth.Authenticate(credentials, str(_auth_secret("cookie_name", "nvidia_ai_viewer")), cookie_key, 30 if remember else 0, auto_hash=False)
     authenticator.login(location="main", max_login_attempts=5, fields={"Form name": "Team View", "Username": "Username", "Password": "Password", "Login": "Sign in"})
     status = st.session_state.get("authentication_status")
     if status is False:
@@ -87,4 +86,6 @@ def require_viewer() -> dict[str, str]:
     if "viewer" not in (st.session_state.get("roles") or []):
         st.error("This account does not have viewer access.")
         st.stop()
+    if not remember:
+        authenticator.cookie_controller.delete_cookie()
     st.rerun()
