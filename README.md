@@ -3,6 +3,12 @@
 A live dashboard for a Kaggle-hosted dual Tesla T4 GPU backend, reached over an
 ngrok tunnel exposing the Jupyter kernel gateway.
 
+## Executive overview
+
+This command center separates a continuously available executive experience from on-demand accelerated compute. Streamlit Community Cloud hosts the secure presentation layer, while Kaggle supplies dual-T4 CUDA capacity when an authorized operator activates the runtime. The dashboard remains accessible and reports the backend truthfully when that capacity is offline.
+
+The public deployment is protected by a branded global viewer portal. Authentication runs before connection secrets or operational code are loaded. Viewers can inspect topology, CUDA status, models, agents, and telemetry, but cannot wake Kaggle, enter tunnel credentials, load or unload models, expose operator controls, or change deployment state. See [`docs/VIEWER_ACCESS.md`](docs/VIEWER_ACCESS.md) for configuration and acceptance tests.
+
 ## What's actually working
 
 `src/dashboard/app.py` is a Streamlit app that:

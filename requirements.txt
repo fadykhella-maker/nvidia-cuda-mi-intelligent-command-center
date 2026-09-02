@@ -2,3 +2,6 @@ streamlit
 requests
 websocket-client
 kaggle
+pillow
+streamlit-authenticator>=0.4.2,<0.5
+bcrypt>=4.2,<5

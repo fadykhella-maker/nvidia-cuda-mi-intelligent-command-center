@@ -48,6 +48,7 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image
+from viewer_portal import require_viewer
 
 ASSET_DIR = Path(__file__).resolve().parent / "assets"
 NVIDIA_ICON_PATH = ASSET_DIR / "nvidia-favicon.png"
@@ -61,6 +62,11 @@ st.set_page_config(
     layout="wide",
 )
 
+# Public deployment contract: authenticate before reading connection secrets,
+# checking remote compute, or rendering the operational dashboard.
+VIEWER_IDENTITY = require_viewer()
+PUBLIC_VIEWER_MODE = True
+
 # A real (if unglamorous) way for a button INSIDE the decorative dashboard's
 # iframe to trigger a real Python-side action: it navigates the REAL outer
 # page (window.top.location) to a URL with ?mi_action=... appended, which
@@ -72,9 +78,9 @@ st.set_page_config(
 # pipeline to get there. Processed and cleared immediately so a later
 # refresh doesn't replay the same action.
 _mi_action = st.query_params.get("mi_action")
-if _mi_action == "show_chrome":
+if not PUBLIC_VIEWER_MODE and _mi_action == "show_chrome":
     st.session_state["mi_show_chrome"] = True
-elif _mi_action == "hide_chrome":
+elif not PUBLIC_VIEWER_MODE and _mi_action == "hide_chrome":
     st.session_state["mi_show_chrome"] = False
 elif _mi_action == "forget":
     st.query_params.clear()
@@ -126,8 +132,8 @@ def get_secret(name: str, default=""):
         return default
 
 
-jupyter_url = get_secret("JUPYTER_URL", params.get("jupyter_url", ""))
-jupyter_token = get_secret("JUPYTER_TOKEN", params.get("jupyter_token", ""))
+jupyter_url = get_secret("JUPYTER_URL", "")
+jupyter_token = get_secret("JUPYTER_TOKEN", "")
 
 # --- Kaggle API wake trigger + activity-based keep-alive -------------------
 # Auto-wakes Kaggle by triggering a fresh run via its REST API (kaggle kernels
@@ -684,26 +690,12 @@ connected = bool(jupyter_url and jupyter_token)
 
 # --- Not connected yet: a plain, honest connect form (same as v2). ----------
 if not connected:
-    st.title("\U0001F5A5️ MI Command Center — live")
+    st.title("NVIDIA Intelligent Command Center")
     st.warning(
-        "Not connected — this checks the real Kaggle kernel, so it needs the "
-        "current tunnel address once. Nothing is \"marked\" online here; the "
-        "full dashboard below always reflects an actual call."
+        "The secure dashboard is available, but the Kaggle GPU connection is "
+        "currently offline or not configured. No viewer action is required."
     )
-    with st.form("connect"):
-        st.write("**Connect to your Kaggle GPU session**")
-        url_in = st.text_input("ngrok URL", placeholder="https://xxxx.ngrok-free.app")
-        token_in = st.text_input("Token", type="password")
-        st.caption(
-            "From the Kaggle notebook's tunnel-launch cell (runbook section 5). "
-            "This isn't a Kaggle account login — Kaggle has no API for that; "
-            "it's the address of the specific live tunnel this session opened."
-        )
-        submitted = st.form_submit_button("Connect")
-    if submitted and url_in and token_in:
-        st.query_params["jupyter_url"] = url_in
-        st.query_params["jupyter_token"] = token_in
-        st.rerun()
+    st.caption("Connection details and compute controls are restricted to the private operator environment.")
     st.stop()
 
 # --- Connected: run the REAL check on every load/refresh, no button needed. -
@@ -716,7 +708,8 @@ if not connected:
 # just for show and can't host a genuinely working toggle no matter how it's
 # styled). st.sidebar sidesteps that limitation entirely since it isn't
 # part of that iframe.
-with st.sidebar:
+if not PUBLIC_VIEWER_MODE:
+ with st.sidebar:
     st.markdown("### ⚙️ Settings")
     st.checkbox(
         "Show Streamlit Cloud toolbar & footer",
@@ -776,7 +769,7 @@ active_provider = GPU_PROVIDERS.get(ACTIVE_GPU_PROVIDER, GPU_PROVIDERS["kaggle"]
 wake_message = None
 provider_status, provider_status_raw = ("unknown", "")
 provider_error_log = ""
-if not online and active_provider.is_configured():
+if not PUBLIC_VIEWER_MODE and not online and active_provider.is_configured():
     provider_status, provider_status_raw = active_provider.get_status()
 
     if provider_status in ("running", "queued"):
@@ -1839,5 +1832,6 @@ def bond_widget_fragment():
             st.rerun()
 
 
-bond_autoload_fragment()
-bond_widget_fragment()
+if not PUBLIC_VIEWER_MODE:
+    bond_autoload_fragment()
+    bond_widget_fragment()
