@@ -191,6 +191,10 @@ def wake_kaggle():
 
     nb_text = nb_text.replace("__JUPYTER_TOKEN_PLACEHOLDER__", jupyter_token)
     nb_text = nb_text.replace("__NGROK_AUTHTOKEN_PLACEHOLDER__", ngrok_authtoken)
+    # GITHUB_TOKEN is optional -- GPU-hour tracking (CLAUDE_CODE_HANDOFF_3.md)
+    # degrades to "not configured, skip" inside the notebook if this is
+    # blank, so a missing token here must never block the wake trigger.
+    nb_text = nb_text.replace("__GITHUB_TOKEN_PLACEHOLDER__", get_secret("GITHUB_TOKEN", ""))
 
     tmp_dir = tempfile.mkdtemp(prefix="kaggle_wake_")
     try:
@@ -341,6 +345,42 @@ GPU_PROVIDERS = {
 # Swapping this later (once a real Azure/AWS/GCP provider is registered
 # above) is a one-line config change, not a rewrite.
 ACTIVE_GPU_PROVIDER = get_secret("GPU_PROVIDER", "kaggle")
+
+# --- GPU-hour usage tracking (CLAUDE_CODE_HANDOFF_3.md) ---------------------
+# The dashboard side only ever READS -- the Kaggle notebook's own keep-alive
+# loop is what writes real observed runtime to data/gpu_usage_log.json in
+# this repo (see the heartbeat cell added to kaggle_kernel/*.ipynb). This is
+# this app's own *observed* estimate of GPU time, not Kaggle's official
+# quota meter -- Kaggle exposes no API for that, so this never claims to be
+# more than what it is.
+GITHUB_REPO_SLUG = "fadykhella-maker/nvidia-cuda-mi-intelligent-command-center"
+GPU_HOUR_BUDGET = 30.0  # the one configurable constant; matches Kaggle's free-tier weekly cap
+GPU_USAGE_PRUNE_DAYS = 7
+
+
+@st.cache_data(ttl=60)
+def read_gpu_hours_used():
+    """Sums observed runtime intervals from the last GPU_USAGE_PRUNE_DAYS
+    days. Returns 0.0 on any failure (file doesn't exist yet, network
+    hiccup, bad JSON) -- this is a nice-to-have status number, never
+    something that should break the page if it's unreachable."""
+    url = f"https://raw.githubusercontent.com/{GITHUB_REPO_SLUG}/main/data/gpu_usage_log.json"
+    try:
+        r = requests.get(url, timeout=8)
+        r.raise_for_status()
+        log = r.json()
+    except Exception:
+        return 0.0
+    now = time.time()
+    cutoff = now - GPU_USAGE_PRUNE_DAYS * 86400
+    try:
+        seconds = sum(
+            iv["end"] - iv["start"] for iv in log.get("intervals", [])
+            if iv.get("end", 0) >= cutoff
+        )
+    except Exception:
+        return 0.0
+    return round(seconds / 3600, 1)
 
 
 def run_remote(code: str, timeout: int = 20):
@@ -873,6 +913,36 @@ else:
       <div class="tip warn">Tunnel check failure reason above is usually just "no tunnel yet" while a run boots or before one's been triggered — the status line above (when available) is the real ground truth for what {esc(active_provider.name)} itself is doing, not a guess.</div>
     """
 
+# --- GPU-hour budget card values --------------------------------------------
+gpu_hours_used = read_gpu_hours_used()
+gpu_hours_pct = min(100, round(gpu_hours_used / GPU_HOUR_BUDGET * 100)) if GPU_HOUR_BUDGET else 0
+if gpu_hours_pct >= 90:
+    gpu_hours_fill_color = "var(--st-crit)"
+    gpu_hours_warning_html = (
+        '<div class="tip warn"><b>90%+ of the weekly GPU-hour budget used</b> — '
+        "expect to hit Kaggle's real 30hr/week quota soon; pushes may start failing "
+        "with a quota error until it resets.</div>"
+    )
+elif gpu_hours_pct >= 75:
+    gpu_hours_fill_color = "var(--st-warn)"
+    gpu_hours_warning_html = (
+        '<div class="tip warn"><b>75%+ of the weekly GPU-hour budget used.</b></div>'
+    )
+elif gpu_hours_pct >= 50:
+    gpu_hours_fill_color = "var(--st-warn)"
+    gpu_hours_warning_html = (
+        '<div class="tip"><b>50%+ of the weekly GPU-hour budget used.</b></div>'
+    )
+else:
+    gpu_hours_fill_color = "var(--nv)"
+    gpu_hours_warning_html = ""
+gpu_hours_note_html = (
+    "Kaggle doesn't expose your official quota via API — this tracks actual session "
+    "runtime observed via a heartbeat the Kaggle notebook writes to this repo every "
+    f"~5 minutes it's running, against a manual default of {GPU_HOUR_BUDGET:g}h/week. "
+    "This is this app's own estimate, not Kaggle's official meter."
+)
+
 HTML_TEMPLATE = r"""
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1090,7 +1160,7 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
   </div>
   <div class="right">
     <span class="pill {{PILL_CLASS}}" id="headerGpuPill"><span class="dot"></span><span id="headerGpuText">GPU BACKEND {{STATUS_TEXT}}</span></span>
-    <span class="pill"><span class="dot"></span>APP-TRACKED GPU HOURS</span>
+    <span class="pill"><span class="dot"></span>APP-TRACKED GPU HOURS {{GPU_HOURS_USED}}/{{GPU_HOURS_BUDGET}}h</span>
     <div class="gpuproviders" id="gpuProviders" role="button" tabindex="0" aria-label="GPU backend providers" title="GPU backend providers">
       <span class="gplabel">NVIDIA GPU</span>
       <span class="gpitem {{PILL_CLASS}}"><i class="gpdot"></i>Kaggle</span>
@@ -1418,15 +1488,16 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
     <div class="bench" style="max-width:640px">
       <div class="barrow" style="grid-template-columns:110px 1fr 100px">
         <div class="lbl"><b>Used</b>this week</div>
-        <div class="track"><div class="fill" style="width:0%;background:var(--nv)"></div></div>
-        <div class="val">0.0<small> hrs</small></div>
+        <div class="track"><div class="fill" style="width:{{GPU_HOURS_PCT}}%;background:{{GPU_HOURS_FILL_COLOR}}"></div></div>
+        <div class="val">{{GPU_HOURS_USED}}<small> hrs</small></div>
       </div>
       <div class="barrow" style="grid-template-columns:110px 1fr 100px">
         <div class="lbl"><b>Budget</b>configurable</div>
         <div class="track"><div class="fill" style="width:100%;background:var(--line)"></div></div>
-        <div class="val">30.0<small> hrs</small></div>
+        <div class="val">{{GPU_HOURS_BUDGET}}<small> hrs</small></div>
       </div>
-      <div class="legend-note">Kaggle doesn't expose your official quota via API — this tracks actual session runtime this app has observed, against a manual default of 30h/week. Not yet actually tracking (Phase 1 item 7). Warnings fire at 50% / 75% / 90% once tracking is live.</div>
+      <div class="legend-note">{{GPU_HOURS_NOTE}}</div>
+      {{GPU_HOURS_WARNING_HTML}}
     </div>
   </div>
   <div class="group">
@@ -1499,9 +1570,9 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
     <div class="card" style="max-width:520px;margin-top:14px">
       <div class="head">
         <div><div class="t">APP-TRACKED GPU HOURS</div>
-        <div class="s">Decorative label only — no number behind it yet</div></div>
+        <div class="s">{{GPU_HOURS_USED}} / {{GPU_HOURS_BUDGET}}h this week</div></div>
       </div>
-      <div class="tip">Not wired to real data at all yet, in the header or here — see the Tokens &amp; GPU hours tab for the actual (also still placeholder, honestly labeled) tracking card.</div>
+      <div class="tip">Mirrors the real number in the header — see the Tokens &amp; GPU hours tab for the full bar, color thresholds, and the note on how this is measured.</div>
     </div>
     <div class="card" style="max-width:520px;margin-top:14px">
       <div class="head">
@@ -1621,6 +1692,12 @@ html = html.replace("{{TORCH_VERSION}}", esc(torch_version))
 html = html.replace("{{CUDA_AVAILABLE}}", "True" if online else "False")
 html = html.replace("{{COMPUTE_CAP}}", esc(compute_cap))
 html = html.replace("{{SYNC_HTML}}", sync_html)
+html = html.replace("{{GPU_HOURS_USED}}", f"{gpu_hours_used:.1f}")
+html = html.replace("{{GPU_HOURS_BUDGET}}", f"{GPU_HOUR_BUDGET:.1f}")
+html = html.replace("{{GPU_HOURS_PCT}}", str(gpu_hours_pct))
+html = html.replace("{{GPU_HOURS_FILL_COLOR}}", gpu_hours_fill_color)
+html = html.replace("{{GPU_HOURS_NOTE}}", esc(gpu_hours_note_html))
+html = html.replace("{{GPU_HOURS_WARNING_HTML}}", gpu_hours_warning_html)
 _chrome_shown = st.session_state.get("mi_show_chrome", False)
 html = html.replace("{{CHROME_ACTION}}", "hide_chrome" if _chrome_shown else "show_chrome")
 html = html.replace("{{CHROME_BTN_LABEL}}", "Hide Streamlit Cloud toolbar & footer" if _chrome_shown else "Show Streamlit Cloud toolbar & footer")
