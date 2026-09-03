@@ -1,5 +1,13 @@
+# Runtime deps for the Lightning Studio inference service.
+#
+# Only the HTTP layer is installed by default -- this is deliberately enough
+# to run /health and /models (which report "no model loaded" honestly) on
+# the free CPU tier without pulling ~2GB of CUDA wheels on every wake.
 fastapi
 uvicorn[standard]
 pydantic
-torch
-transformers
+
+# Inference deps -- uncomment (or `pip install -r requirements-inference.txt`)
+# only when /chat is actually wired up and the Studio is on a GPU tier.
+# torch
+# transformers

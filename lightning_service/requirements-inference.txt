@@ -1,0 +1,5 @@
+# Heavy deps for real inference via /chat. Install these ON TOP of
+# requirements.txt, and only when the Studio is on a GPU tier and /chat is
+# actually being exercised -- see lightning_service/main.py.
+torch
+transformers
