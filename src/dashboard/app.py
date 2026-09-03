@@ -1020,7 +1020,24 @@ with st.sidebar:
             st.caption(f"⚪ {_provider.name} — not configured")
             continue
         _status, _ = provider_statuses.get(_key, ("unknown", ""))
-        st.caption(f"{_status_dot.get(_status, '⚪')} **{_provider.name}** — {_status}")
+        _pcol, _wcol = st.columns([3, 1])
+        with _pcol:
+            st.caption(f"{_status_dot.get(_status, '⚪')} **{_provider.name}** — {_status}")
+        with _wcol:
+            # Manual per-provider wake -- the "home page, wake them from
+            # here" piece. Shares the exact same last_wake_trigger_at_{key}
+            # cooldown key the auto-wake block below uses, so a manual
+            # click and an automatic trigger can't double-fire against the
+            # same provider.
+            if _status != "running" and st.button("Wake", key=f"wake_btn_{_key}"):
+                _cd_key = f"last_wake_trigger_at_{_key}"
+                _last = st.session_state.get(_cd_key, 0)
+                if time.time() - _last > 240:
+                    _wok, _wmsg = _provider.wake()
+                    st.session_state[_cd_key] = time.time()
+                    st.toast(_wmsg if _wok else f"⚠️ {_wmsg}")
+                else:
+                    st.toast("Already triggered recently — give it a bit longer.")
     st.caption("⚪ Azure · AWS · GCP — planned, not yet configured")
 
     _provider_options = ["automatic"] + GPU_PROVIDER_PRIORITY
