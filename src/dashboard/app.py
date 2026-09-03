@@ -241,8 +241,17 @@ def get_kaggle_status():
     raw = ((r.stdout or "") + (r.stderr or "")).strip()
     if r.returncode != 0:
         return "unknown", raw or "status check failed"
-    m = re.search(r'has status "?([a-zA-Z]+)"?', raw)
-    return (m.group(1).lower() if m else "unknown"), raw
+    # Newer kaggle CLI versions print the raw enum repr, e.g.
+    # `has status "KernelWorkerStatus.COMPLETE"` -- verified directly
+    # against a live call. [a-zA-Z]+ alone stops at the first non-letter
+    # and was matching "KernelWorkerStatus" (the enum class name) instead
+    # of "COMPLETE" (the actual value) -- confirmed live in production as
+    # the "KAGGLE SESSION KERNELWORKERSTATUS" pill text. Capture the whole
+    # dotted token, then take the piece after the last "." if there is one
+    # -- handles both this format and a plain bare word with no class
+    # prefix, whichever this CLI version happens to print.
+    m = re.search(r'has status "?([\w.]+)"?', raw)
+    return (m.group(1).rsplit(".", 1)[-1].lower() if m else "unknown"), raw
 
 
 def get_kaggle_error_log(max_chars: int = 2000) -> str:
