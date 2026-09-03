@@ -37,6 +37,7 @@ import base64
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -183,7 +184,12 @@ LIGHTNING_CLOUDSPACE_ID = "01m1hvwkfgpav25v3g8m8z1tey"
 LIGHTNING_SERVICE_PORT = 8800
 LIGHTNING_SERVICE_URL = f"https://{LIGHTNING_SERVICE_PORT}-{LIGHTNING_CLOUDSPACE_ID}.cloudspaces.litng.ai"
 LIGHTNING_REPO_DIR = "/teamspace/studios/this_studio/nvidia-cuda-mi-intelligent-command-center"
-LIGHTNING_WAKE_MACHINE = get_secret("LIGHTNING_MACHINE", "T4")
+LIGHTNING_SERVICE_BRANCH = "main"  # branch the Studio checks out on wake
+# Machine tier a wake starts the Studio on. Deliberately CPU: the service
+# only exposes /health + /models today (no inference), so a wake must not
+# burn any of the 27 free T4 hours. Set the LIGHTNING_MACHINE secret to
+# "T4" only once /chat is actually wired up and a GPU is genuinely needed.
+LIGHTNING_WAKE_MACHINE = get_secret("LIGHTNING_MACHINE", "CPU")
 
 
 def _lightning_env():
@@ -214,7 +220,7 @@ def wake_lightning():
     try:
         studio = Studio(LIGHTNING_STUDIO_NAME, teamspace=LIGHTNING_TEAMSPACE, org=LIGHTNING_ORG)
         if str(studio.status).rsplit(".", 1)[-1].lower() != "running":
-            machine = getattr(Machine, LIGHTNING_WAKE_MACHINE, Machine.T4)
+            machine = getattr(Machine, LIGHTNING_WAKE_MACHINE, Machine.CPU)
             studio.start(machine)
         # git pull picks up any code changes since the Studio's disk was
         # last touched; the venv/pip install step is idempotent and fast
@@ -222,10 +228,16 @@ def wake_lightning():
         # stop/start, unlike Kaggle's fresh-container-every-run model) --
         # only a genuinely fresh Studio pays the full install cost.
         cmd = (
-            f"cd {LIGHTNING_REPO_DIR} && git pull -q origin lightning-provider; "
+            f"cd {LIGHTNING_REPO_DIR} && git fetch -q origin && "
+            f"git checkout -q {LIGHTNING_SERVICE_BRANCH} && "
+            f"git reset --hard -q origin/{LIGHTNING_SERVICE_BRANCH}; "
             "cd lightning_service && (test -d .venv || python3 -m venv .venv) && "
             ".venv/bin/pip install -q -r requirements.txt && "
             "(pkill -f 'uvicorn main:app' || true) && "
+            # LIGHTNING_SERVICE_TOKEN (when set) is what main.py's bearer-auth
+            # check reads. Passed inline so it never lands in a file on the
+            # Studio; empty is fine for the current /health-only CPU service.
+            f"LIGHTNING_SERVICE_TOKEN={shlex.quote(LIGHTNING_SERVICE_TOKEN)} "
             f"nohup .venv/bin/uvicorn main:app --host 0.0.0.0 --port {LIGHTNING_SERVICE_PORT} "
             "> /tmp/lightning_service.log 2>&1 &"
         )
@@ -239,26 +251,64 @@ def wake_lightning():
         return False, f"Couldn't wake Lightning: {e}"
 
 
+def get_lightning_health(timeout: float = 5.0):
+    """GET the real FastAPI /health on the Studio over Lightning's public
+    URL. Returns the parsed JSON dict on a 200, or None if the service
+    isn't reachable (Studio asleep/stopped, service still booting, network
+    error, or a non-JSON "studio sleeping" page). Never raises."""
+    try:
+        r = requests.get(f"{LIGHTNING_SERVICE_URL}/health", timeout=timeout)
+        if r.status_code == 200:
+            body = r.json()
+            if isinstance(body, dict):
+                return body
+    except Exception:
+        pass
+    return None
+
+
 def get_lightning_status():
-    """Ask Lightning itself what the Studio's real state is -- same
-    ground-truth philosophy as get_kaggle_status(): the platform's own
-    answer, not a guess from whether the service happens to respond.
-    Returns (status, raw_output); status is 'unknown' if the check itself
-    couldn't be completed (no credentials, sdk missing, network error)."""
+    """Real ground-truth status for the Lightning backend. Primary signal
+    is the service's own /health endpoint (same idea as Kaggle: ask the
+    thing itself, don't guess). If /health doesn't answer, fall back to
+    Lightning's SDK to tell "still booting" from "asleep" from "can't
+    check at all". Returns (status, raw_output):
+
+      running  -- /health answered 200; the service is up and serving
+      queued   -- Studio is running but /health hasn't come up yet
+      stopped  -- Studio is asleep/stopped (a wake is what's needed)
+      unknown  -- the check itself couldn't be completed (no creds, sdk
+                  missing, Lightning API unreachable)
+    """
     if not LIGHTNING_API_KEY or not LIGHTNING_USER_ID:
         return "unknown", "Lightning API credentials aren't configured."
+
+    health = get_lightning_health()
+    if health is not None:
+        where = "GPU" if health.get("gpu_available") else "CPU"
+        loaded = health.get("models_loaded") or []
+        return "running", (
+            f"/health 200 — service up on {where}; "
+            f"torch={health.get('torch_version')}; models_loaded={loaded}"
+        )
+
+    # /health silent -- ask the platform whether the box is even on.
     _lightning_env()
     try:
         from lightning_sdk import Studio
     except Exception as e:
-        return "unknown", f"lightning-sdk isn't installed: {e}"
+        return "unknown", f"/health unreachable and lightning-sdk isn't installed: {e}"
     try:
         studio = Studio(LIGHTNING_STUDIO_NAME, teamspace=LIGHTNING_TEAMSPACE, org=LIGHTNING_ORG)
-        raw = str(studio.status)
-        status = raw.rsplit(".", 1)[-1].lower()
-        return status, f"status={raw} machine={studio.machine}"
+        raw = str(studio.status).rsplit(".", 1)[-1].lower()
+        if raw == "running":
+            return "queued", (
+                f"Studio is running (machine={studio.machine}) but /health "
+                "hasn't come up yet — service still starting."
+            )
+        return "stopped", f"Studio status={raw}; /health not reachable."
     except Exception as e:
-        return "unknown", f"Couldn't reach Lightning's API: {e}"
+        return "unknown", f"/health unreachable and Lightning's API check failed: {e}"
 
 ACTIVITY_TOUCH_CODE = (
     "import time as _t, os as _o\n"
@@ -442,9 +492,13 @@ class LightningGPUProvider(GPUProvider):
     kaggle CLI + ngrok; Lightning: a Python SDK + Lightning's own native
     port exposure, no separate tunnel tool needed).
 
-    Every method here was verified live against the real account this
-    session, not written against assumed API behavior -- see wake_lightning()
-    and get_lightning_status() for what was actually tested."""
+    get_status() checks the service's real /health endpoint first and only
+    falls back to the SDK's Studio.status when /health is silent -- so a
+    green "running" here means the service actually answered, not just that
+    the box is on. Verified live against the real account: Studio
+    start/status/switch_machine, run_and_detach() for the backgrounded
+    uvicorn, add_ports() for the public URL, and a real off-box GET to
+    https://8800-<cloudspace>.cloudspaces.litng.ai/health returning 200."""
 
     name = "Lightning"
 
@@ -456,6 +510,12 @@ class LightningGPUProvider(GPUProvider):
 
     def get_status(self):
         return get_lightning_status()
+
+    def get_health(self):
+        """Parsed /health dict (gpu_available, models_loaded, torch_version)
+        or None -- for the Lightning detail page. Not part of the GPUProvider
+        interface; Lightning-specific extra, same as Kaggle's get_error_log."""
+        return get_lightning_health()
 
 
 class UnconfiguredGPUProvider(GPUProvider):
