@@ -784,7 +784,10 @@ if not PUBLIC_VIEWER_MODE:
 with st.spinner("Checking the live Kaggle kernel..."):
     info_ok, info_out = run_remote(
         "import subprocess, json, torch\n"
-        "smi = subprocess.run(['nvidia-smi'], capture_output=True, text=True).stdout\n"
+        "try:\n"
+        "    smi = subprocess.run(['nvidia-smi'], capture_output=True, text=True).stdout\n"
+        "except FileNotFoundError:\n"
+        "    smi = ''  # no nvidia-smi at all on a GPU-less kernel -- confirmed directly on a CPU-only test run\n"
         "info = {\n"
         "  'cuda_available': torch.cuda.is_available(),\n"
         "  'device_count': torch.cuda.device_count() if torch.cuda.is_available() else 0,\n"
