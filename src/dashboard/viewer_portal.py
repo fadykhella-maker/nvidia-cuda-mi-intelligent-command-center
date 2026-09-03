@@ -39,10 +39,10 @@ div.st-key-viewer_logout{{position:fixed;right:18px;top:14px;z-index:999999;widt
 .portal-note{{text-align:center;color:#e1e5e8;font:12px ui-monospace,monospace;letter-spacing:1.5px;margin:-10px 0 16px}}
 @media(max-width:700px){{[data-testid="stMainBlockContainer"],.main .block-container{{margin-top:7vh!important;padding:24px 22px 58px!important}}.nv-world svg{{width:180%;left:-40%}}.nv-head span{{display:none}}}}
 </style>
-<div class="nv-world" aria-hidden="true"><img class="world-map-image" src="{map_uri}" alt="" /><div class="nv-head"><b>NVIDIA Accelerated Intelligence</b><span>Kaggle GPU · CUDA Engineering · Global Compute Fabric</span></div>
+<div class="nv-world" aria-hidden="true"><img class="world-map-image" src="{map_uri}" alt="" /><div class="nv-head"><b>NVIDIA Accelerated Intelligence</b><span>NVIDIA GPU · CUDA Engineering · Global Compute Fabric</span></div>
 <svg viewBox="0 0 1120 500" preserveAspectRatio="xMidYMid slice"><g class="grid"><path d="M0 100H1120M0 200H1120M0 300H1120M0 400H1120M140 0V500M280 0V500M420 0V500M560 0V500M700 0V500M840 0V500M980 0V500"/></g><g class="land"><path d="M75 146l28-30 49-11 42 9 20 21 44 4 31 31-12 23-36 9-19 35-25 10-8 42-29 38-22-33-28-12-13-46-32-25 15-30z"/><path d="M281 114l13-18 25 3 7 15-20 14z"/><path d="M323 230l37 4 31 28 15 47-17 54-28 53-24-31 3-42-23-36-12-48z"/><path d="M505 145l28-31 48-12 34 14 38-7 40 13 55-6 36 18 57 2 43 24 67 16 34 31-21 25-55-4-28 22-50-7-33 20-51-10-28-38-33 9-22-28-43 5-31-26-37 9-34-21z"/><path d="M566 225l48 10 31 38-8 55-30 73-39-22-18-51-20-43z"/><path d="M874 342l40-22 56 12 31 34-15 43-67 10-49-30z"/><path d="M1008 389l18-9 16 15-13 17z"/></g><g><path class="route" d="M115 225Q360 45 610 210"/><path class="route alt" d="M175 265Q460 480 790 245"/><path class="route" d="M380 170Q650 5 900 205"/><path class="route alt" d="M95 330Q510 120 980 345"/></g><g><circle class="node" cx="145" cy="210" r="5"/><circle class="node" cx="420" cy="178" r="5"/><circle class="node" cx="655" cy="180" r="5"/><circle class="node" cx="925" cy="218" r="5"/><circle class="node" cx="960" cy="385" r="5"/></g></svg></div>
 <div class="login-card-surface" aria-hidden="true"></div>
-<div class="portal-note">NVIDIA INTELLIGENT COMMAND CENTER · SECURE TEAM VIEW</div>
+<div class="portal-note">NVIDIA AI Cloud Control</div>
 """,
         unsafe_allow_html=True,
     )
