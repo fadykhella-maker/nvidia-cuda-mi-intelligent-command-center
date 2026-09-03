@@ -57,7 +57,16 @@ def require_viewer() -> dict[str, str]:
         st.stop()
 
     credentials = {"usernames": {username: {"name": str(_auth_secret("viewer_name", "Team Viewer")), "password": password_hash, "roles": ["viewer"]}}}
-    authenticator = stauth.Authenticate(credentials, str(_auth_secret("cookie_name", "nvidia_ai_viewer")), cookie_key, 30, auto_hash=False)
+    remember_key = "nvidia_remember_viewer"
+    remember = bool(st.session_state.get(remember_key, True))
+    cookie_expiry_days = 30 if remember else 0
+    authenticator = stauth.Authenticate(
+        credentials,
+        str(_auth_secret("cookie_name", "nvidia_ai_viewer")),
+        cookie_key,
+        cookie_expiry_days,
+        auto_hash=False,
+    )
     authenticator.login(location="unrendered")
     if st.session_state.get("authentication_status") is True:
         if "viewer" not in (st.session_state.get("roles") or []):
@@ -82,11 +91,6 @@ def require_viewer() -> dict[str, str]:
         return {"username": username, "role": "viewer"}
 
     _login_scene()
-    # Read the persisted choice before submitting the authenticator form.  The
-    # authenticator can rerun the app immediately after a successful submit,
-    # so a checkbox value first read below login() is not reliable on that run.
-    remember_key = "nvidia_remember_viewer"
-    remember = bool(st.session_state.get(remember_key, True))
     authenticator.login(location="main", max_login_attempts=5, fields={"Form name": "Team View", "Username": "Username", "Password": "Password", "Login": "Sign in"})
     st.checkbox(
         "Remember this trusted device for 30 days",
@@ -101,6 +105,7 @@ def require_viewer() -> dict[str, str]:
     if "viewer" not in (st.session_state.get("roles") or []):
         st.error("This account does not have viewer access.")
         st.stop()
-    if not remember:
-        authenticator.cookie_controller.delete_cookie()
-    st.rerun()
+    # Do not call st.rerun() here. CookieManager writes the signed browser
+    # cookie from the frontend after this script run completes; an immediate
+    # rerun can interrupt that write and force another login on the next visit.
+    return {"username": username, "role": "viewer"}
