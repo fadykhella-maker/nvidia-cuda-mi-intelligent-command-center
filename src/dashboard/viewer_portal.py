@@ -82,8 +82,17 @@ def require_viewer() -> dict[str, str]:
         return {"username": username, "role": "viewer"}
 
     _login_scene()
+    # Read the persisted choice before submitting the authenticator form.  The
+    # authenticator can rerun the app immediately after a successful submit,
+    # so a checkbox value first read below login() is not reliable on that run.
+    remember_key = "nvidia_remember_viewer"
+    remember = bool(st.session_state.get(remember_key, True))
     authenticator.login(location="main", max_login_attempts=5, fields={"Form name": "Team View", "Username": "Username", "Password": "Password", "Login": "Sign in"})
-    remember = st.checkbox("Remember this trusted device for 30 days", value=False)
+    st.checkbox(
+        "Remember this trusted device for 30 days",
+        value=True,
+        key=remember_key,
+    )
     status = st.session_state.get("authentication_status")
     if status is False:
         st.error("Username or password is incorrect.")
