@@ -71,7 +71,17 @@ st.set_page_config(
 # Public deployment contract: authenticate before reading connection secrets,
 # checking remote compute, or rendering the operational dashboard.
 VIEWER_IDENTITY = require_viewer()
-PUBLIC_VIEWER_MODE = True
+# Every path into this app already passes through require_viewer() above, so
+# everyone who reaches this line is an authenticated team member. This flag
+# was added alongside the viewer portal to hide operator-only controls from
+# an anonymous public, but no owner/anonymous split was ever implemented --
+# it is hardcoded, so leaving it True locked the *only* role the app has
+# (authenticated viewer, including the owner) out of Settings, the Bond 001
+# chat, and the error-log view for no security benefit. Auto-wake and the
+# per-provider Wake buttons were already un-gated from it in earlier fixes;
+# this flips the remaining three. Set back to True only if a real
+# anonymous-viewer tier is ever added.
+PUBLIC_VIEWER_MODE = False
 
 # A real (if unglamorous) way for a button INSIDE the decorative dashboard's
 # iframe to trigger a real Python-side action: it navigates the REAL outer
