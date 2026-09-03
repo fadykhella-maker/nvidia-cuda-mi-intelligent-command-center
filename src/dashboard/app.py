@@ -325,6 +325,49 @@ class KaggleGPUProvider(GPUProvider):
         return get_kaggle_error_log(max_chars)
 
 
+class LightningGPUProvider(GPUProvider):
+    """Lightning AI Studio backend -- talks to a small FastAPI service
+    (lightning_service/main.py) running ON the Studio itself, not a
+    Kaggle-style push-and-poll API. Same is_configured()/wake()/
+    get_status() shape as KaggleGPUProvider so the rest of the
+    dashboard's wake/status flow doesn't need to know which backend
+    it's actually talking to -- same interface, different transport.
+
+    wake() is deliberately honest that it isn't built yet: starting a
+    Lightning Studio programmatically needs the `lightning` CLI
+    authenticated on whichever host runs this dashboard (Streamlit
+    Cloud), which hasn't been set up or tested. Claiming a working wake
+    button here before that's actually proven would be exactly the kind
+    of overclaim this project has deliberately avoided everywhere else
+    -- start the Studio manually for now; wire real auto-wake as its
+    own separately-verified step, same as Kaggle's was."""
+
+    name = "Lightning"
+
+    def is_configured(self) -> bool:
+        return bool(get_secret("LIGHTNING_SERVICE_URL", ""))
+
+    def wake(self):
+        return False, (
+            "Lightning auto-wake isn't wired up yet -- start the Studio manually "
+            "(lightning.ai, or `lightning studio start` if you have the CLI)."
+        )
+
+    def get_status(self):
+        url = get_secret("LIGHTNING_SERVICE_URL", "")
+        if not url:
+            return "unknown", "LIGHTNING_SERVICE_URL isn't configured."
+        token = get_secret("LIGHTNING_SERVICE_TOKEN", "")
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        try:
+            r = requests.get(f"{url.rstrip('/')}/health", headers=headers, timeout=8)
+            r.raise_for_status()
+            data = r.json()
+        except Exception as e:
+            return "unreachable", f"Couldn't reach the Lightning service: {e}"
+        return ("running" if data.get("status") == "ok" else "error"), json.dumps(data)
+
+
 class UnconfiguredGPUProvider(GPUProvider):
     """Placeholder for a cloud GPU backend (Azure/AWS/GCP) that isn't wired
     up yet -- see the multi-provider roadmap item in
@@ -346,6 +389,7 @@ class UnconfiguredGPUProvider(GPUProvider):
 
 GPU_PROVIDERS = {
     "kaggle": KaggleGPUProvider(),
+    "lightning": LightningGPUProvider(),
     "azure": UnconfiguredGPUProvider("Azure"),
     "aws": UnconfiguredGPUProvider("AWS"),
     "gcp": UnconfiguredGPUProvider("GCP"),
