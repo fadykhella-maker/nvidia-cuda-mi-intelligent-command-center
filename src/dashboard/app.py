@@ -154,6 +154,102 @@ KAGGLE_KERNEL = "confidentialnvidia/confidential-nvidia-cuda-01"
 KAGGLE_KERNEL_PATH = "kaggle_kernel"  # relative to this deployed repo's root
 KAGGLE_WORKDIR = "/kaggle/working/AI_Lab"
 
+# --- Lightning AI Studio backend --------------------------------------------
+# Verified live this session (not assumed from docs): the `lightning-sdk`
+# package genuinely controls this Studio (Studio.start()/.status/.stop()),
+# and Studio.add_ports() exposes a real public URL with no separate tunnel
+# needed -- unlike Kaggle, which needs ngrok. That public URL's shape
+# (https://{port}-{cloudspace_id}.cloudspaces.litng.ai) is deterministic
+# given the port and this Studio's fixed cloudspace id, so it's computed
+# directly below rather than needing its own manually-configured secret --
+# one less thing to keep in sync by hand.
+LIGHTNING_API_KEY = get_secret("LIGHTNING_API_KEY", "")
+LIGHTNING_USER_ID = get_secret("LIGHTNING_USER_ID", "")
+LIGHTNING_SERVICE_TOKEN = get_secret("LIGHTNING_SERVICE_TOKEN", "")
+LIGHTNING_STUDIO_NAME = "coastal-salmon-q96l"
+LIGHTNING_TEAMSPACE = "general"
+LIGHTNING_ORG = "mnbd-org"  # the real API slug -- the UI shows the display name "MNBD Org" instead
+LIGHTNING_CLOUDSPACE_ID = "01m1hvwkfgpav25v3g8m8z1tey"
+LIGHTNING_SERVICE_PORT = 8800
+LIGHTNING_SERVICE_URL = f"https://{LIGHTNING_SERVICE_PORT}-{LIGHTNING_CLOUDSPACE_ID}.cloudspaces.litng.ai"
+LIGHTNING_REPO_DIR = "/teamspace/studios/this_studio/nvidia-cuda-mi-intelligent-command-center"
+LIGHTNING_WAKE_MACHINE = get_secret("LIGHTNING_MACHINE", "T4")
+
+
+def _lightning_env():
+    """lightning-sdk reads credentials from os.environ, not a value passed
+    in -- unlike the kaggle CLI (invoked via subprocess with an explicit
+    env dict), this is a Python import, so the current process's actual
+    environment has to carry these before any lightning_sdk call."""
+    os.environ["LIGHTNING_API_KEY"] = LIGHTNING_API_KEY
+    os.environ["LIGHTNING_USER_ID"] = LIGHTNING_USER_ID
+
+
+def wake_lightning():
+    """Trigger a real Lightning Studio start (if not already running) and
+    (re)launch the FastAPI inference service on it -- the Lightning
+    equivalent of wake_kaggle(). Every piece of this was verified live
+    against the real account this session: Studio.start()/.status,
+    run_and_detach() for a backgrounded long-running process, and
+    add_ports() for the public URL.
+
+    Returns (ok, message)."""
+    if not LIGHTNING_API_KEY or not LIGHTNING_USER_ID:
+        return False, "LIGHTNING_API_KEY and/or LIGHTNING_USER_ID secrets aren't configured."
+    _lightning_env()
+    try:
+        from lightning_sdk import Machine, Studio
+    except Exception as e:
+        return False, f"lightning-sdk isn't installed: {e}"
+    try:
+        studio = Studio(LIGHTNING_STUDIO_NAME, teamspace=LIGHTNING_TEAMSPACE, org=LIGHTNING_ORG)
+        if str(studio.status).rsplit(".", 1)[-1].lower() != "running":
+            machine = getattr(Machine, LIGHTNING_WAKE_MACHINE, Machine.T4)
+            studio.start(machine)
+        # git pull picks up any code changes since the Studio's disk was
+        # last touched; the venv/pip install step is idempotent and fast
+        # once already set up (the Studio's disk persists across
+        # stop/start, unlike Kaggle's fresh-container-every-run model) --
+        # only a genuinely fresh Studio pays the full install cost.
+        cmd = (
+            f"cd {LIGHTNING_REPO_DIR} && git pull -q origin lightning-provider; "
+            "cd lightning_service && (test -d .venv || python3 -m venv .venv) && "
+            ".venv/bin/pip install -q -r requirements.txt && "
+            "(pkill -f 'uvicorn main:app' || true) && "
+            f"nohup .venv/bin/uvicorn main:app --host 0.0.0.0 --port {LIGHTNING_SERVICE_PORT} "
+            "> /tmp/lightning_service.log 2>&1 &"
+        )
+        studio.run_and_detach(cmd, timeout=20)
+        try:
+            studio.add_ports(LIGHTNING_SERVICE_PORT)
+        except Exception:
+            pass  # already exposed from an earlier wake -- not fatal either way
+        return True, "Lightning Studio wake triggered — service (re)started."
+    except Exception as e:
+        return False, f"Couldn't wake Lightning: {e}"
+
+
+def get_lightning_status():
+    """Ask Lightning itself what the Studio's real state is -- same
+    ground-truth philosophy as get_kaggle_status(): the platform's own
+    answer, not a guess from whether the service happens to respond.
+    Returns (status, raw_output); status is 'unknown' if the check itself
+    couldn't be completed (no credentials, sdk missing, network error)."""
+    if not LIGHTNING_API_KEY or not LIGHTNING_USER_ID:
+        return "unknown", "Lightning API credentials aren't configured."
+    _lightning_env()
+    try:
+        from lightning_sdk import Studio
+    except Exception as e:
+        return "unknown", f"lightning-sdk isn't installed: {e}"
+    try:
+        studio = Studio(LIGHTNING_STUDIO_NAME, teamspace=LIGHTNING_TEAMSPACE, org=LIGHTNING_ORG)
+        raw = str(studio.status)
+        status = raw.rsplit(".", 1)[-1].lower()
+        return status, f"status={raw} machine={studio.machine}"
+    except Exception as e:
+        return "unknown", f"Couldn't reach Lightning's API: {e}"
+
 ACTIVITY_TOUCH_CODE = (
     "import time as _t, os as _o\n"
     f"with open(_o.path.join({KAGGLE_WORKDIR!r}, 'last_activity.txt'), 'w') as _f:\n"
@@ -326,46 +422,30 @@ class KaggleGPUProvider(GPUProvider):
 
 
 class LightningGPUProvider(GPUProvider):
-    """Lightning AI Studio backend -- talks to a small FastAPI service
-    (lightning_service/main.py) running ON the Studio itself, not a
-    Kaggle-style push-and-poll API. Same is_configured()/wake()/
-    get_status() shape as KaggleGPUProvider so the rest of the
-    dashboard's wake/status flow doesn't need to know which backend
-    it's actually talking to -- same interface, different transport.
+    """Lightning AI Studio backend -- talks to Lightning's own REST API via
+    the `lightning-sdk` package (Studio.start()/.status/.add_ports()), plus
+    a small FastAPI service (lightning_service/main.py) running ON the
+    Studio itself for the actual inference calls. Same is_configured()/
+    wake()/get_status() shape as KaggleGPUProvider so the rest of the
+    dashboard's wake/status flow doesn't need to know which backend it's
+    actually talking to -- same interface, different transport (Kaggle:
+    kaggle CLI + ngrok; Lightning: a Python SDK + Lightning's own native
+    port exposure, no separate tunnel tool needed).
 
-    wake() is deliberately honest that it isn't built yet: starting a
-    Lightning Studio programmatically needs the `lightning` CLI
-    authenticated on whichever host runs this dashboard (Streamlit
-    Cloud), which hasn't been set up or tested. Claiming a working wake
-    button here before that's actually proven would be exactly the kind
-    of overclaim this project has deliberately avoided everywhere else
-    -- start the Studio manually for now; wire real auto-wake as its
-    own separately-verified step, same as Kaggle's was."""
+    Every method here was verified live against the real account this
+    session, not written against assumed API behavior -- see wake_lightning()
+    and get_lightning_status() for what was actually tested."""
 
     name = "Lightning"
 
     def is_configured(self) -> bool:
-        return bool(get_secret("LIGHTNING_SERVICE_URL", ""))
+        return bool(LIGHTNING_API_KEY and LIGHTNING_USER_ID)
 
     def wake(self):
-        return False, (
-            "Lightning auto-wake isn't wired up yet -- start the Studio manually "
-            "(lightning.ai, or `lightning studio start` if you have the CLI)."
-        )
+        return wake_lightning()
 
     def get_status(self):
-        url = get_secret("LIGHTNING_SERVICE_URL", "")
-        if not url:
-            return "unknown", "LIGHTNING_SERVICE_URL isn't configured."
-        token = get_secret("LIGHTNING_SERVICE_TOKEN", "")
-        headers = {"Authorization": f"Bearer {token}"} if token else {}
-        try:
-            r = requests.get(f"{url.rstrip('/')}/health", headers=headers, timeout=8)
-            r.raise_for_status()
-            data = r.json()
-        except Exception as e:
-            return "unreachable", f"Couldn't reach the Lightning service: {e}"
-        return ("running" if data.get("status") == "ok" else "error"), json.dumps(data)
+        return get_lightning_status()
 
 
 class UnconfiguredGPUProvider(GPUProvider):
@@ -394,10 +474,53 @@ GPU_PROVIDERS = {
     "aws": UnconfiguredGPUProvider("AWS"),
     "gcp": UnconfiguredGPUProvider("GCP"),
 }
-# Which provider the dashboard's wake/status flow actually drives today.
-# Swapping this later (once a real Azure/AWS/GCP provider is registered
-# above) is a one-line config change, not a rewrite.
+# Which provider the dashboard's wake/status flow drives when a viewer
+# hasn't picked one by hand -- the default for "automatic" mode's fallback
+# and for GPU_PROVIDER-secret-based pinning, not the only provider in play
+# anymore now that "automatic" can resolve to whichever is actually healthy.
 ACTIVE_GPU_PROVIDER = get_secret("GPU_PROVIDER", "kaggle")
+
+# Real backends only -- Azure/AWS/GCP are UnconfiguredGPUProvider and never
+# resolve to healthy, so there's no point spending a status check on them
+# every page load.
+GPU_PROVIDER_PRIORITY = ["kaggle", "lightning"]
+
+
+def resolve_active_gpu_provider():
+    """Which provider Bond/GPU actions actually use right now.
+
+    A manual selection (st.session_state["gpu_provider_choice"], set by the
+    sidebar selector below) always wins outright, healthy or not -- picking
+    one by hand is supposed to mean "use this one," not "use this one if
+    it's up." "automatic" (the default) tries each configured provider in
+    GPU_PROVIDER_PRIORITY order and returns the first one that's actually
+    running; if none are, falls back to the first *configured* one (so
+    existing offline/wake messaging still has a concrete target, matching
+    today's single-provider behavior) and finally to Kaggle outright if
+    nothing is configured at all.
+
+    Returns (provider, provider_key, statuses) -- statuses is the
+    {key: (status, raw)} dict computed along the way, reused by both the
+    status-pill UI and the rest of the page so each provider's real
+    get_status() (a genuine network/subprocess call, not free) only runs
+    once per page load, not once per consumer."""
+    statuses = {}
+    for key in GPU_PROVIDER_PRIORITY:
+        provider = GPU_PROVIDERS.get(key)
+        if provider and provider.is_configured():
+            statuses[key] = provider.get_status()
+
+    choice = st.session_state.get("gpu_provider_choice", "automatic")
+    if choice != "automatic" and choice in GPU_PROVIDERS:
+        return GPU_PROVIDERS[choice], choice, statuses
+
+    for key in GPU_PROVIDER_PRIORITY:
+        if statuses.get(key, ("unknown", ""))[0] == "running":
+            return GPU_PROVIDERS[key], key, statuses
+    for key in GPU_PROVIDER_PRIORITY:
+        if key in statuses:
+            return GPU_PROVIDERS[key], key, statuses
+    return GPU_PROVIDERS["kaggle"], "kaggle", statuses
 
 # --- GPU-hour usage tracking (CLAUDE_CODE_HANDOFF_3.md) ---------------------
 # The dashboard side only ever READS -- the Kaggle notebook's own keep-alive
@@ -867,20 +990,72 @@ online = bool(info_ok and info and info.get("cuda_available"))
 # triggered" showing while the backend stayed offline indefinitely. Now we
 # ask Kaggle's own status first and only push when nothing is already in
 # flight.
-active_provider = GPU_PROVIDERS.get(ACTIVE_GPU_PROVIDER, GPU_PROVIDERS["kaggle"])
+# active_provider now comes from resolve_active_gpu_provider() -- either
+# whichever the sidebar selector picked, or (in "automatic", the default)
+# the first configured provider that's actually healthy, Kaggle first then
+# Lightning. provider_statuses is reused here rather than re-fetched --
+# each provider's get_status() is a real network/subprocess call, run once
+# per page load inside that resolver, not once per consumer. Read-only
+# status polls run for EVERY viewer regardless of PUBLIC_VIEWER_MODE --
+# there's no cost or security reason to hide "is it running/queued/
+# complete/error" behind the owner gate. Only the ACTIONS below
+# (triggering a real push/start, pulling the crash log) stay owner-gated
+# where that was already true, unchanged.
+active_provider, active_provider_key, provider_statuses = resolve_active_gpu_provider()
 wake_message = None
-provider_status, provider_status_raw = ("unknown", "")
+provider_status, provider_status_raw = provider_statuses.get(active_provider_key, ("unknown", ""))
 provider_error_log = ""
-# Read-only status poll (kaggle kernels status -- no push, no GPU-hours
-# spent, just asking what the last triggered run is actually doing) runs
-# for EVERY viewer, regardless of PUBLIC_VIEWER_MODE -- there's no cost or
-# security reason to hide "is it running/queued/complete/error" behind the
-# owner gate. Only the ACTIONS below (triggering a real push, pulling the
-# crash log) stay owner-gated, unchanged.
-if active_provider.is_configured():
-    provider_status, provider_status_raw = active_provider.get_status()
 
-if not PUBLIC_VIEWER_MODE and not online and active_provider.is_configured():
+# Real, native Streamlit UI (not the decorative components.html() iframe --
+# a genuinely working selector needs a real backend connection, same
+# reasoning as the sidebar Settings toggle above it). A manual pick always
+# wins; "Automatic" (the default) is what resolve_active_gpu_provider()
+# above already used to pick active_provider.
+with st.sidebar:
+    st.markdown("### 🖥️ GPU Providers")
+    _status_dot = {"running": "🟢", "queued": "🟡", "error": "🔴"}
+    for _key in GPU_PROVIDER_PRIORITY:
+        _provider = GPU_PROVIDERS[_key]
+        if not _provider.is_configured():
+            st.caption(f"⚪ {_provider.name} — not configured")
+            continue
+        _status, _ = provider_statuses.get(_key, ("unknown", ""))
+        st.caption(f"{_status_dot.get(_status, '⚪')} **{_provider.name}** — {_status}")
+    st.caption("⚪ Azure · AWS · GCP — planned, not yet configured")
+
+    _provider_options = ["automatic"] + GPU_PROVIDER_PRIORITY
+    _provider_labels = {"automatic": "Automatic", "kaggle": "Kaggle", "lightning": "Lightning"}
+    st.radio(
+        "Active GPU provider",
+        options=_provider_options,
+        format_func=lambda k: _provider_labels.get(k, k.title()),
+        key="gpu_provider_choice",
+        help="Automatic picks the first healthy configured provider (Kaggle, then Lightning). Picking one by hand always uses that one, healthy or not.",
+    )
+    st.caption(f"Resolved right now: **{active_provider.name}**")
+
+# Auto-wake is always on -- no toggle, no opt-in, and (deliberately, per
+# explicit decision) no longer gated behind PUBLIC_VIEWER_MODE the way the
+# status-check above still isn't gated either. That gate previously meant
+# auto-wake never actually fired for any viewer in production at all,
+# since PUBLIC_VIEWER_MODE is hardcoded True -- confirmed earlier this
+# session. Real behavior change: any authenticated viewer's page load can
+# now trigger a real wake (a real kaggle push / Lightning Studio start),
+# not just the owner. The cooldown/already-in-flight guard below is the
+# only thing standing between that and a restart-loop -- now keyed per
+# provider (was a single shared key, which would have let two different
+# providers' cooldowns incorrectly block each other).
+#
+# Known limitation, unchanged from Kaggle's original design, not
+# introduced here: the cooldown lives in st.session_state, which is
+# per-browser-session -- it stops one visitor from spamming wakes on
+# repeated refreshes, but doesn't stop several different visitors loading
+# the page within the same cooldown window from each independently
+# triggering a wake. The "already running/queued" check above provides a
+# second, narrower layer of protection once a wake has actually taken
+# effect, but there's a real (if brief) race window between "wake
+# triggered" and "status reflects it."
+if not online and active_provider.is_configured():
     if provider_status in ("running", "queued"):
         # A run is already in flight -- pushing again would restart it, not
         # help it. Just report the real status and wait.
@@ -891,11 +1066,12 @@ if not PUBLIC_VIEWER_MODE and not online and active_provider.is_configured():
             'progress). Give it a bit longer, then hit "Recheck now."',
         )
     else:
-        last_wake = st.session_state.get("last_wake_trigger_at", 0)
+        cooldown_key = f"last_wake_trigger_at_{active_provider_key}"
+        last_wake = st.session_state.get(cooldown_key, 0)
         WAKE_COOLDOWN_SECONDS = 240
         if time.time() - last_wake > WAKE_COOLDOWN_SECONDS:
             wake_ok, wake_msg = active_provider.wake()
-            st.session_state["last_wake_trigger_at"] = time.time()
+            st.session_state[cooldown_key] = time.time()
             if wake_ok:
                 wake_msg += f' (last known status before this push: "{provider_status}")'
             wake_message = (wake_ok, wake_msg)
@@ -903,7 +1079,7 @@ if not PUBLIC_VIEWER_MODE and not online and active_provider.is_configured():
             wait_left = int(WAKE_COOLDOWN_SECONDS - (time.time() - last_wake))
             wake_message = (True, f"Already triggered a wake-up recently — give it up to {wait_left}s more, then refresh.")
 
-    if provider_status == "error" and hasattr(active_provider, "get_error_log"):
+    if not PUBLIC_VIEWER_MODE and provider_status == "error" and hasattr(active_provider, "get_error_log"):
         provider_error_log = active_provider.get_error_log()
 
 smi_text = (info or {}).get("smi", "") or info_out
