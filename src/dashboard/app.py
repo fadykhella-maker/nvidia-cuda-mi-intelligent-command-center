@@ -815,9 +815,16 @@ active_provider = GPU_PROVIDERS.get(ACTIVE_GPU_PROVIDER, GPU_PROVIDERS["kaggle"]
 wake_message = None
 provider_status, provider_status_raw = ("unknown", "")
 provider_error_log = ""
-if not PUBLIC_VIEWER_MODE and not online and active_provider.is_configured():
+# Read-only status poll (kaggle kernels status -- no push, no GPU-hours
+# spent, just asking what the last triggered run is actually doing) runs
+# for EVERY viewer, regardless of PUBLIC_VIEWER_MODE -- there's no cost or
+# security reason to hide "is it running/queued/complete/error" behind the
+# owner gate. Only the ACTIONS below (triggering a real push, pulling the
+# crash log) stay owner-gated, unchanged.
+if active_provider.is_configured():
     provider_status, provider_status_raw = active_provider.get_status()
 
+if not PUBLIC_VIEWER_MODE and not online and active_provider.is_configured():
     if provider_status in ("running", "queued"):
         # A run is already in flight -- pushing again would restart it, not
         # help it. Just report the real status and wait.
@@ -859,6 +866,22 @@ pill_class = "on" if online else "off"
 kpi_class = "g" if online else "mu"
 gpu_count_name = f"{device_count}× {device_name.replace('Tesla ', '')}" if online else "— offline —"
 cuda_kpi = cuda_version if online else "—"
+
+# Kaggle's OWN reported run status ("running"/"queued"/"complete"/"error"/
+# "unknown") -- a genuinely different signal from GPU BACKEND ONLINE/OFFLINE
+# above, which only says whether the tunnel is currently reachable. This
+# tells you WHY it isn't: still booting (queued/running but tunnel not up
+# yet), cleanly idle (complete, nothing to wake), or actually broken
+# (error). provider_status is computed unconditionally above (read-only
+# poll, no PUBLIC_VIEWER_MODE gate) so this is real for every viewer.
+_PROVIDER_STATUS_PILL_CLASS = {"running": "on", "queued": "warn", "error": "off"}
+provider_status_pill_class = _PROVIDER_STATUS_PILL_CLASS.get(provider_status, "")
+provider_status_text = provider_status.upper() if provider_status != "unknown" else "STATUS UNKNOWN"
+provider_status_title = (
+    f'{active_provider.name} reports "{provider_status}" for the last triggered run'
+    if provider_status != "unknown"
+    else f"{active_provider.name}'s own status couldn't be checked (not configured, or the check itself failed)"
+)
 
 if online:
     sync_html = f"""
@@ -1031,6 +1054,7 @@ header .right{margin-left:auto;display:flex;gap:10px;align-items:center;flex-wra
 .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--faint);flex:none}
 .pill.off .dot{background:var(--st-crit);box-shadow:0 0 7px rgba(229,72,77,.6)}
 .pill.on .dot{background:var(--st-good);box-shadow:0 0 7px rgba(47,179,86,.6)}
+.pill.warn .dot{background:var(--st-warn);box-shadow:0 0 7px rgba(217,165,63,.6)}
 .nvlogo{display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:10px;color:var(--faint);
   border-left:1px solid var(--line);padding-left:12px}
 .nvlogo b{color:var(--nv);font-family:var(--body);font-weight:700;letter-spacing:.03em}
@@ -1160,6 +1184,7 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
   </div>
   <div class="right">
     <span class="pill {{PILL_CLASS}}" id="headerGpuPill"><span class="dot"></span><span id="headerGpuText">GPU BACKEND {{STATUS_TEXT}}</span></span>
+    <span class="pill {{PROVIDER_STATUS_PILL_CLASS}}" title="{{PROVIDER_STATUS_TITLE}}"><span class="dot"></span>KAGGLE SESSION {{PROVIDER_STATUS_TEXT}}</span>
     <span class="pill"><span class="dot"></span>APP-TRACKED GPU HOURS {{GPU_HOURS_USED}}/{{GPU_HOURS_BUDGET}}h</span>
     <div class="gpuproviders" id="gpuProviders" role="button" tabindex="0" aria-label="GPU backend providers" title="GPU backend providers">
       <span class="gplabel">NVIDIA GPU</span>
@@ -1680,6 +1705,9 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
 html = HTML_TEMPLATE
 html = html.replace("{{NVIDIA_ICON_DATA_URI}}", NVIDIA_ICON_DATA_URI)
 html = html.replace("{{PILL_CLASS}}", pill_class)
+html = html.replace("{{PROVIDER_STATUS_PILL_CLASS}}", provider_status_pill_class)
+html = html.replace("{{PROVIDER_STATUS_TEXT}}", esc(provider_status_text))
+html = html.replace("{{PROVIDER_STATUS_TITLE}}", esc(provider_status_title))
 html = html.replace("{{STATUS_TEXT}}", status_text)
 html = html.replace("{{STATUS_TEXT_LOWER}}", "confirmed live" if online else "not reachable right now")
 html = html.replace("{{KPI_CLASS}}", kpi_class)
