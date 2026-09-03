@@ -1055,7 +1055,7 @@ with st.sidebar:
 # second, narrower layer of protection once a wake has actually taken
 # effect, but there's a real (if brief) race window between "wake
 # triggered" and "status reflects it."
-if not online and active_provider.is_configured():
+if provider_status != "running" and active_provider.is_configured():
     if provider_status in ("running", "queued"):
         # A run is already in flight -- pushing again would restart it, not
         # help it. Just report the real status and wait.
