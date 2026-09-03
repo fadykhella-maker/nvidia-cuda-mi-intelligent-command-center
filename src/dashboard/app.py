@@ -1475,7 +1475,7 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
       <div class="kbox"><div class="n {{KPI_CLASS}}" id="kpiGpuBackend">{{STATUS_TEXT}}</div><div class="l">GPU backend</div></div>
       <div class="kbox"><div class="n g">{{GPU_COUNT_NAME}}</div><div class="l">Kaggle GPUs (live)</div></div>
       <div class="kbox"><div class="n b">{{CUDA_KPI}}</div><div class="l">CUDA toolkit</div></div>
-      <div class="kbox"><div class="n gr">6.7×</div><div class="l">Best kernel speedup</div></div>
+      <div class="kbox"><div class="n gr">6.7×</div><div class="l">Best kernel speedup (one-time bench, 8/26)</div></div>
       <div class="kbox"><div class="n mu">0.0 / 30</div><div class="l">GPU hours (app-tracked)</div></div>
     </div>
 
@@ -1497,13 +1497,13 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
         </div>
       </div>
       <div class="card">
-        <div class="head"><div class="badge">✓</div><div><div class="t">Kernel benchmark verified</div><div class="s">matmul_v2.cu · 1024³ GEMM</div></div><span class="statepill good"><span class="d"></span>confirmed</span></div>
+        <div class="head"><div class="badge">✓</div><div><div class="t">Kernel benchmark verified</div><div class="s">matmul_v2.cu · 1024³ GEMM · one-time run, 2026-08-26</div></div><span class="statepill good"><span class="d"></span>confirmed</span></div>
         <div class="rows">
           <div class="row">register-tiled vs naive<b>6.7×</b></div>
           <div class="row">register-tiled vs cuBLAS<b>2.77×</b></div>
           <div class="row">correctness check<b>passed</b></div>
         </div>
-        <div class="foot">full breakdown → GPU &amp; CUDA tab</div>
+        <div class="foot">static numbers from that one run, not re-benchmarked live — full breakdown → GPU &amp; CUDA tab</div>
       </div>
       <div class="card">
         <div class="head"><div class="badge">4</div><div><div class="t">Pick a model, it loads on demand</div><div class="s">4-bit, bitsandbytes</div></div><span class="statepill good"><span class="d"></span>on demand</span></div>
@@ -1658,7 +1658,7 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
   </div>
 
   <div class="group">
-    <div class="group-title"><span class="bar"></span><h3>Run log</h3></div>
+    <div class="group-title"><span class="bar"></span><h3>Run log</h3><span class="note">same one-time run · 2026-08-26 · not re-benchmarked on refresh</span></div>
     <div class="scroll-x">
       <table class="tbl">
         <thead><tr><th>Kernel</th><th>Time (ms)</th><th>GFLOP/s</th><th>vs. naive</th><th>vs. cuBLAS</th></tr></thead>
@@ -1676,29 +1676,7 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
 <section class="view" id="models">
   <div class="lead">
     <h2>Model <span class="g">inference</span></h2>
-    <p>The local LLM under test on this rig. Nothing here is live yet — shown as the honest pending state rather than mocked numbers.</p>
-  </div>
-  <div class="group">
-    <div class="grid">
-      <div class="card">
-        <div class="head"><div class="badge">φ</div><div><div class="t">Phi-3-mini-4k-instruct</div><div class="s">microsoft/phi-3-mini-4k-instruct</div></div><span class="statepill warn"><span class="d"></span>pending</span></div>
-        <div class="rows">
-          <div class="row">quantization<b>4-bit (bitsandbytes)</b></div>
-          <div class="row">compute dtype<b>float16</b></div>
-          <div class="row">target device<b>cuda:0</b></div>
-          <div class="row">parameters<b>3.8B</b></div>
-        </div>
-        <div class="foot">install → load → generate: none of the three steps have run yet</div>
-      </div>
-      <div class="card">
-        <div class="head"><div class="badge">＋</div><div><div class="t">Next model candidate</div><div class="s">not yet selected</div></div><span class="statepill idle"><span class="d"></span>idle</span></div>
-        <div class="rows">
-          <div class="row">candidates<b>Llama, Mistral</b></div>
-          <div class="row">blocker<b>license accept step</b></div>
-        </div>
-        <div class="foot">gated on HuggingFace, deferred until Phi-3 baseline works</div>
-      </div>
-    </div>
+    <p>The local LLMs under test on this rig. Six candidates below can be loaded through Bond's native panel via a shared, generic loader on the live kernel — per-request telemetry (tokens/sec, latency, GPU memory) isn't wired up yet, shown honestly as pending rather than mocked numbers.</p>
   </div>
   <div class="group">
     <div class="group-title"><span class="bar"></span><h3>What this tab will show once live</h3></div>
