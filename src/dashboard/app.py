@@ -1011,28 +1011,33 @@ def esc(text: str) -> str:
 
 
 # --- Reusable hardware status chips ----------------------------------------
-# A provider-agnostic building block: one chip per physical compute tier a
-# provider offers, each showing its own live ONLINE / OFFLINE state. Wired up
-# for Lightning (CPU vs GPU (T4)) now; ready to reuse for Kaggle's T4x2 and
-# for Azure / AWS / GCP once those are real backends -- pass whatever
-# (label, state) pairs a provider has, this doesn't know about any of them.
+# A provider-agnostic building block: one chip per independent capability a
+# provider exposes, each showing its own live ONLINE / OFFLINE state and an
+# optional short reason. Wired up for Lightning (CPU vs GPU (T4)) and Kaggle
+# (Service vs GPU (T4x2)); ready to reuse for Azure / AWS / GCP once those
+# are real -- pass whatever (label, state[, note]) tuples a provider has,
+# this doesn't know about any of them.
 _HW_CHIP_WORD = {"online": "ONLINE", "offline": "OFFLINE", "unknown": "—"}
 
 
-def hw_status_chip(label: str, state: str) -> str:
+def hw_status_chip(label: str, state: str, note: str | None = None) -> str:
     """One hardware status chip. state: 'online' | 'offline' | 'unknown'
-    (anything else is treated as 'unknown'). Returns an HTML string."""
+    (anything else is treated as 'unknown'). `note` is an optional short
+    reason shown after the state word (e.g. "out of GPU quota"). Returns an
+    HTML string."""
     state = state if state in _HW_CHIP_WORD else "unknown"
+    note_html = f'<span class="hwnote">{esc(note)}</span>' if note else ""
     return (
         f'<span class="hwchip hw-{state}"><i class="hwdot"></i>'
         f'<span class="hwlbl">{esc(label)}</span>'
-        f'<b class="hwstate">{_HW_CHIP_WORD[state]}</b></span>'
+        f'<b class="hwstate">{_HW_CHIP_WORD[state]}</b>{note_html}</span>'
     )
 
 
 def hw_status_row(chips) -> str:
-    """A row of hw_status_chip()s. `chips` is an iterable of (label, state)."""
-    return '<div class="hwrow">' + "".join(hw_status_chip(l, s) for l, s in chips) + "</div>"
+    """A row of hw_status_chip()s. `chips` is an iterable of (label, state)
+    or (label, state, note) tuples."""
+    return '<div class="hwrow">' + "".join(hw_status_chip(*c) for c in chips) + "</div>"
 
 
 connected = bool(jupyter_url and jupyter_token)
@@ -1443,6 +1448,64 @@ gpu_hours_note_html = (
     "This is this app's own estimate, not Kaggle's official meter."
 )
 
+# --- Kaggle service / GPU hardware chips (GPU tab) ------------------------
+# Same reusable chip pattern as Lightning, but Kaggle's two independent
+# signals are "is the kernel reachable" vs "is GPU compute actually usable":
+#
+#   Service     -- did run_remote() reach the kernel this load (info_ok), or
+#                  does Kaggle's own run status say "running"
+#   GPU (T4x2)  -- did the real torch.cuda.is_available() check pass (online).
+#                  If the service is up but CUDA isn't, the usual Kaggle
+#                  cause is an exhausted weekly GPU quota -- and the only
+#                  real evidence we have for that is (a) the crash log
+#                  mentioning quota (that IS from Kaggle's API) or (b) this
+#                  app's own observed GPU-hour log being at/over budget.
+#                  Kaggle exposes no quota API and no reset time, so there
+#                  is deliberately NO countdown here -- just "out of GPU
+#                  quota" and a pointer to kaggle.com.
+kaggle_configured = bool(jupyter_url and jupyter_token)
+_kaggle_run_status = provider_statuses.get("kaggle", ("unknown", ""))[0]
+kaggle_service_reachable = bool(info_ok) or _kaggle_run_status == "running"
+
+if not kaggle_configured:
+    kaggle_service_state, kaggle_service_note = "unknown", "not configured"
+elif kaggle_service_reachable:
+    kaggle_service_state, kaggle_service_note = "online", None
+elif _kaggle_run_status in ("queued", "running"):
+    kaggle_service_state, kaggle_service_note = "offline", "kernel still booting"
+else:
+    kaggle_service_state, kaggle_service_note = "offline", None
+
+_quota_exhausted = (
+    gpu_hours_used >= GPU_HOUR_BUDGET
+    or "quota" in (provider_error_log or "").lower()
+)
+if online:
+    kaggle_gpu_state, kaggle_gpu_note = "online", None
+elif not kaggle_service_reachable:
+    kaggle_gpu_state, kaggle_gpu_note = "offline", None
+elif _quota_exhausted:
+    kaggle_gpu_state, kaggle_gpu_note = "offline", "out of GPU quota"
+else:
+    kaggle_gpu_state, kaggle_gpu_note = "offline", "GPU not attached to this kernel"
+
+kaggle_hw_row = hw_status_row([
+    ("Service", kaggle_service_state, kaggle_service_note),
+    ("GPU (T4×2)", kaggle_gpu_state, kaggle_gpu_note),
+])
+if kaggle_gpu_note == "out of GPU quota":
+    kaggle_hw_note_html = (
+        '<div class="tip warn"><b>GPU compute is unavailable and looks quota-limited.</b> '
+        f"This app's observed GPU time is {gpu_hours_used:.1f}h against a {GPU_HOUR_BUDGET:g}h/week "
+        "budget"
+        + (", and the last run log mentions a quota error" if "quota" in (provider_error_log or "").lower() else "")
+        + ". Kaggle exposes no quota API and no reset time — check "
+        "<a href=\"https://www.kaggle.com/settings\" target=\"_blank\">kaggle.com/settings</a> "
+        "for your real reset.</div>"
+    )
+else:
+    kaggle_hw_note_html = ""
+
 HTML_TEMPLATE = r"""
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1637,6 +1700,7 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
 .hwchip .hwdot{width:9px;height:9px;border-radius:50%;border:1.5px solid var(--faint);background:transparent;flex:none}
 .hwchip .hwlbl{color:var(--muted);letter-spacing:.03em}
 .hwchip .hwstate{font-size:10px;letter-spacing:.09em;color:var(--faint)}
+.hwchip .hwnote{font-size:9.5px;letter-spacing:.02em;color:var(--st-warn);margin-left:-3px}
 .hwchip.hw-online{border-color:rgba(47,179,86,.4)}
 .hwchip.hw-online .hwdot{background:var(--st-good);border-color:var(--st-good);box-shadow:0 0 7px rgba(47,179,86,.55)}
 .hwchip.hw-online .hwstate{color:var(--st-good)}
@@ -1853,6 +1917,12 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
   <div class="lead">
     <h2>GPU <span class="g">&amp; CUDA</span></h2>
     <p>Hardware detection is live (checked {{CHECKED_AT}}). The benchmark numbers below are a real one-time run captured 2026-08-26 through the kernel bridge — not sample data, but not re-run on every refresh either (that would burn GPU-hours for no reason).</p>
+  </div>
+
+  <div class="group">
+    <div class="group-title"><span class="bar"></span><h3>Kaggle backend</h3><span class="note">real machine tier — kernel reachability and GPU compute are independent</span></div>
+    {{KAGGLE_HW_ROW}}
+    {{KAGGLE_HW_NOTE}}
   </div>
 
   <div class="group">
@@ -2256,6 +2326,8 @@ html = html.replace("{{LIGHTNING_STRIP_CLASS}}", lightning_strip_class)
 html = html.replace("{{LIGHTNING_KPI_CLASS}}", lightning_kpi_class)
 html = html.replace("{{LIGHTNING_STATUS_WORD}}", esc(lightning_status_word))
 html = html.replace("{{LIGHTNING_HW_ROW}}", lightning_hw_row)
+html = html.replace("{{KAGGLE_HW_ROW}}", kaggle_hw_row)
+html = html.replace("{{KAGGLE_HW_NOTE}}", kaggle_hw_note_html)
 html = html.replace("{{LIGHTNING_STUDIO_NAME}}", esc(LIGHTNING_STUDIO_NAME))
 html = html.replace("{{LIGHTNING_SERVICE_URL}}", esc(LIGHTNING_SERVICE_URL))
 html = html.replace("{{LIGHTNING_CONN_LINE}}", lightning_conn_line)
