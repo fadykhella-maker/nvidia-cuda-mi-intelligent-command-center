@@ -251,6 +251,7 @@ def wake_lightning():
         return False, f"Couldn't wake Lightning: {e}"
 
 
+@st.cache_data(ttl=15, show_spinner=False)
 def get_lightning_health(timeout: float = 5.0):
     """GET the real FastAPI /health on the Studio over Lightning's public
     URL. Returns the parsed JSON dict on a 200, or None if the service
@@ -1207,6 +1208,71 @@ provider_status_title = (
     else f"{active_provider.name}'s own status couldn't be checked (not configured, or the check itself failed)"
 )
 
+# --- Lightning detail: values for the dedicated Lightning view and its top-
+# strip pill. provider_statuses already holds ("running"/"queued"/"stopped"/
+# "unknown", raw) from the resolver's one call per load; get_lightning_health()
+# is cached (ttl=15s) so re-reading it here for the machine-tier detail costs
+# nothing extra.
+_lightning_provider = GPU_PROVIDERS["lightning"]
+lightning_configured = _lightning_provider.is_configured()
+lightning_status, lightning_status_raw = provider_statuses.get(
+    "lightning",
+    ("unknown", "Lightning API credentials aren't configured." if not lightning_configured else ""),
+)
+lightning_health = _lightning_provider.get_health() if lightning_configured else None
+
+if lightning_health is not None:
+    if lightning_health.get("gpu_available"):
+        lightning_tier = lightning_health.get("device_name") or "GPU"
+    else:
+        lightning_tier = "CPU"
+elif lightning_status == "queued":
+    lightning_tier = "starting…"
+elif not lightning_configured:
+    lightning_tier = "—"
+else:
+    lightning_tier = "unknown"
+
+_LIGHTNING_STRIP_CLASS = {"running": "on", "queued": "warn", "error": "off"}
+lightning_strip_class = _LIGHTNING_STRIP_CLASS.get(lightning_status, "off")
+lightning_kpi_class = {"running": "gr", "queued": "b", "stopped": "mu", "error": "mu"}.get(lightning_status, "mu")
+_LIGHTNING_STATUS_WORD = {
+    "running": "REACHABLE",
+    "queued": "STARTING",
+    "stopped": "ASLEEP",
+    "error": "ERROR",
+    "unknown": "NOT CONFIGURED" if not lightning_configured else "UNKNOWN",
+}
+lightning_status_word = _LIGHTNING_STATUS_WORD.get(lightning_status, lightning_status.upper())
+
+if not lightning_configured:
+    lightning_conn_line = (
+        "Lightning isn't configured — add the LIGHTNING_API_KEY and "
+        "LIGHTNING_USER_ID secrets to enable it."
+    )
+elif lightning_status == "running":
+    lightning_conn_line = (
+        f"The Studio's FastAPI service answered <b>/health</b> just now "
+        f"(machine: {esc(lightning_tier)}). "
+        f"torch {esc(str((lightning_health or {}).get('torch_version') or '—'))}, "
+        f"models loaded: {esc(str((lightning_health or {}).get('models_loaded') or []))}."
+    )
+elif lightning_status == "queued":
+    lightning_conn_line = (
+        "The Studio is running but its service hasn't answered <b>/health</b> "
+        "yet — it's still starting. Refresh in a moment."
+    )
+elif lightning_status == "stopped":
+    lightning_conn_line = (
+        "The Studio is asleep (it auto-sleeps after ~10 min idle). "
+        "A wake — automatic on the next visit, or the sidebar Wake button — "
+        "brings it back on the free CPU tier in about 90 seconds."
+    )
+else:
+    lightning_conn_line = (
+        f"Lightning's status couldn't be read right now: {esc(lightning_status_raw or 'unknown error')}"
+    )
+
 if online:
     sync_html = f"""
       <div class="syncbox-row">
@@ -1477,6 +1543,8 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
 .gpitem{display:flex;align-items:center;gap:5px;white-space:nowrap}
 .gpitem .gpdot{width:6px;height:6px;border-radius:50%;background:var(--faint);opacity:.45;flex:none}
 .gpitem.on .gpdot{background:var(--st-good);opacity:1;box-shadow:0 0 6px rgba(47,179,86,.6)}
+.gpitem.warn .gpdot{background:var(--st-warn);opacity:1}
+.gpitem.link{cursor:pointer}.gpitem.link:hover{color:var(--nv-hi)}
 .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(14px);background:var(--raised);
   border:1px solid var(--line);color:var(--ink);font-size:12.5px;padding:12px 18px;border-radius:11px;
   box-shadow:0 16px 40px -10px rgba(0,0,0,.5);opacity:0;pointer-events:none;transition:opacity .25s,transform .25s;
@@ -1492,6 +1560,7 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
   <button class="nav" data-view="models"><span class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="4" cy="5" r="1.6"/><circle cx="20" cy="5" r="1.6"/><circle cx="4" cy="19" r="1.6"/><circle cx="20" cy="19" r="1.6"/><path d="M9.6 10.2 5.2 6M14.4 10.2 18.8 6M9.6 13.8 5.2 18M14.4 13.8 18.8 18"/></svg></span><span class="cap">Models</span></button>
   <button class="nav" data-view="agents"><span class="ico"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.4"/><rect x="13" y="4" width="7" height="7" rx="1.4"/><rect x="4" y="13" width="7" height="7" rx="1.4"/><rect x="13" y="13" width="7" height="7" rx="1.4"/></svg></span><span class="cap">Agents</span></button>
   <button class="nav" data-view="tokens"><span class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v9M9 10h4.2a1.8 1.8 0 0 1 0 3.6H9m2-7v1.2m0 9.6V17.4"/></svg></span><span class="cap">Tokens</span></button>
+  <button class="nav" data-view="lightning"><span class="ico"><svg viewBox="0 0 24 24"><path d="M13 2 4.5 13.5H11l-1 8.5L19.5 10H13z"/></svg></span><span class="cap">Lightning</span></button>
   <div class="spacer"></div>
   <button class="nav" data-view="settings"><span class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span><span class="cap">Settings</span></button>
   <button class="nav" data-view="about"><span class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.6v.1"/></svg></span><span class="cap">About</span></button>
@@ -1513,6 +1582,7 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
     <div class="gpuproviders" id="gpuProviders" role="button" tabindex="0" aria-label="GPU backend providers" title="GPU backend providers">
       <span class="gplabel">NVIDIA GPU</span>
       <span class="gpitem {{PILL_CLASS}}"><i class="gpdot"></i>Kaggle</span>
+      <span class="gpitem link {{LIGHTNING_STRIP_CLASS}}" id="gpLightning" title="Lightning — open the Lightning page" onclick="event.stopPropagation();miShowView('lightning')"><i class="gpdot"></i>Lightning</span>
       <span class="gpitem off"><i class="gpdot"></i>AWS</span>
       <span class="gpitem off"><i class="gpdot"></i>Azure</span>
       <span class="gpitem off"><i class="gpdot"></i>GCP</span>
@@ -1844,6 +1914,48 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
   </div>
 </section>
 
+<section class="view" id="lightning">
+  <div class="lead">
+    <h2>Lightning <span class="g">AI Studio</span></h2>
+    <p>A second, optional NVIDIA GPU backend alongside Kaggle — a Lightning AI Studio running a small FastAPI service, selectable from the sidebar's <b>Active GPU provider</b> control. Kaggle stays the default and the fallback.</p>
+  </div>
+
+  <div class="group">
+    <div class="group-title"><span class="bar"></span><h3>Connection</h3><span class="note">live, checked on this page load</span></div>
+    <div class="kpi">
+      <div class="kbox"><div class="n {{LIGHTNING_KPI_CLASS}}">{{LIGHTNING_STATUS_WORD}}</div><div class="l">Service /health</div></div>
+      <div class="kbox"><div class="n b">{{LIGHTNING_TIER}}</div><div class="l">Studio machine tier</div></div>
+      <div class="kbox"><div class="n mu">{{LIGHTNING_STUDIO_NAME}}</div><div class="l">Studio</div></div>
+    </div>
+    <div class="card" style="max-width:640px;margin-top:14px">
+      <div class="head"><div><div class="t">What's connected</div></div>
+        <span class="pill {{LIGHTNING_STRIP_CLASS}}"><span class="dot"></span>{{LIGHTNING_STATUS_WORD}}</span></div>
+      <div class="tip">{{LIGHTNING_CONN_LINE}}</div>
+      <div class="row" style="margin-top:8px">service URL<b class="mono" style="font-size:10.5px">{{LIGHTNING_SERVICE_URL}}</b></div>
+    </div>
+  </div>
+
+  <div class="tip warn"><b>Reachable, not yet serving models.</b> The service answers <span class="mono">/health</span> and <span class="mono">/models</span> only — no inference endpoint is wired up yet, so Lightning can't return a model reply today. When <span class="mono">/chat</span> is built it will need a manual switch to the T4 tier; nothing here starts a GPU automatically.</div>
+
+  <div class="group">
+    <div class="group-title"><span class="bar"></span><h3>Free-tier limits &amp; guardrails</h3><span class="note">from the Lightning handoff, section 4</span></div>
+    <div class="scroll-x">
+      <table class="tbl">
+        <thead><tr><th>Machine</th><th>Free allowance shown</th><th>Use</th><th>Rule</th></tr></thead>
+        <tbody>
+          <tr><td>CPU</td><td>free, auto-sleeps at ~10&nbsp;min idle</td><td>setup, coding, git sync, <span class="mono">/health</span></td><td>default — safe to auto-wake</td></tr>
+          <tr><td>T4</td><td>27 hours</td><td>inference validation</td><td>manual start/stop only — never automatic</td></tr>
+          <tr><td>L40S</td><td>4 hours</td><td>optional short benchmark</td><td>avoid during setup</td></tr>
+          <tr><td>A100</td><td>3 hours</td><td>future experiments</td><td>avoid during setup</td></tr>
+          <tr><td>H100</td><td>3 hours</td><td>future experiments</td><td>avoid during setup</td></tr>
+          <tr><td>H200</td><td>2 hours</td><td>future experiments</td><td>avoid during setup</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="tip warn"><b>Billing guardrail.</b> Treat the Lightning account UI as authoritative. Verify no payment method, no auto-reload, and no paid deployment before any GPU use. The account showed 5.00 credits and 27 T4 free hours — that did <i>not</i> prove a recurring allowance, and free hours are not assumed to reset monthly unless Lightning's own usage page says so. The Studio showing "AWS" just means Lightning runs on AWS infrastructure; it is not your AWS account.</div>
+  </div>
+</section>
+
 <section class="view" id="settings">
   <div class="lead">
     <h2><span class="g">Settings</span></h2>
@@ -1904,10 +2016,11 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
     <div class="card" style="max-width:520px;margin-top:14px">
       <div class="head">
         <div><div class="t">NVIDIA GPU providers</div>
-        <div class="s">Kaggle status is real; AWS/Azure/GCP are placeholders</div></div>
+        <div class="s">Kaggle and Lightning status are real; AWS/Azure/GCP are placeholders</div></div>
       </div>
       <div class="syncbox-row">
         <span class="gpitem {{PILL_CLASS}}"><i class="gpdot"></i>Kaggle</span>
+        <span class="gpitem link {{LIGHTNING_STRIP_CLASS}}" onclick="miShowView('lightning')"><i class="gpdot"></i>Lightning</span>
         <span class="gpitem off"><i class="gpdot"></i>AWS</span>
         <span class="gpitem off"><i class="gpdot"></i>Azure</span>
         <span class="gpitem off"><i class="gpdot"></i>GCP</span>
@@ -1932,13 +2045,20 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
 (function(){
   var buttons = document.querySelectorAll('.rail button.nav');
   var views = document.querySelectorAll('.view');
+  function showView(name){
+    var btn = document.querySelector('.rail button.nav[data-view="' + name + '"]');
+    if(!btn) return;
+    buttons.forEach(function(x){x.classList.remove('active')});
+    views.forEach(function(v){v.classList.remove('active')});
+    btn.classList.add('active');
+    var v = document.getElementById(name);
+    if(v) v.classList.add('active');
+  }
+  // Let pills/items elsewhere on the page jump to a nav view (e.g. the
+  // Lightning status item in the top strip -> the Lightning page).
+  window.miShowView = showView;
   buttons.forEach(function(b){
-    b.addEventListener('click', function(){
-      buttons.forEach(function(x){x.classList.remove('active')});
-      views.forEach(function(v){v.classList.remove('active')});
-      b.classList.add('active');
-      document.getElementById(b.dataset.view).classList.add('active');
-    });
+    b.addEventListener('click', function(){ showView(b.dataset.view); });
   });
   // Two theme buttons now (header + Settings tab, added so the Settings
   // page mirrors the header instead of stranding a real control up top
@@ -2031,6 +2151,17 @@ html = html.replace("{{GPU_HOURS_WARNING_HTML}}", gpu_hours_warning_html)
 _chrome_shown = st.session_state.get("mi_show_chrome", False)
 html = html.replace("{{CHROME_ACTION}}", "hide_chrome" if _chrome_shown else "show_chrome")
 html = html.replace("{{CHROME_BTN_LABEL}}", "Hide Streamlit Cloud toolbar & footer" if _chrome_shown else "Show Streamlit Cloud toolbar & footer")
+
+# Lightning view + top-strip item (steps 5-6). CONN_LINE carries intentional
+# markup with its dynamic parts already esc()'d individually, so it is not
+# re-escaped here; everything else is a plain string.
+html = html.replace("{{LIGHTNING_STRIP_CLASS}}", lightning_strip_class)
+html = html.replace("{{LIGHTNING_KPI_CLASS}}", lightning_kpi_class)
+html = html.replace("{{LIGHTNING_STATUS_WORD}}", esc(lightning_status_word))
+html = html.replace("{{LIGHTNING_TIER}}", esc(lightning_tier))
+html = html.replace("{{LIGHTNING_STUDIO_NAME}}", esc(LIGHTNING_STUDIO_NAME))
+html = html.replace("{{LIGHTNING_SERVICE_URL}}", esc(LIGHTNING_SERVICE_URL))
+html = html.replace("{{LIGHTNING_CONN_LINE}}", lightning_conn_line)
 
 components.html(html, height=980, scrolling=False)
 
