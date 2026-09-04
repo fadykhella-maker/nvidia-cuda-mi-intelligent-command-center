@@ -5,10 +5,16 @@ setup (a raw Jupyter kernel driven over a websocket wire protocol), this
 is a genuine HTTP API, since the Studio can run a normal long-lived
 service directly.
 
-Auth: a single bearer token from the LIGHTNING_SERVICE_TOKEN env var,
-never committed. If that env var is unset, auth is skipped entirely --
-fine for an internal CPU-tier test reached only via SSH+localhost, but
-this MUST be set before this service is ever exposed publicly.
+Auth: a single shared secret from the LIGHTNING_SERVICE_TOKEN env var,
+checked on EVERY request (including /health) by the middleware below.
+The Studio exposes this service on a public URL with no network-level
+protection, so the token is the only thing standing in front of it --
+it is mandatory, not optional. If the env var is unset the service still
+starts but every request returns 503, so a misconfigured deploy fails
+loudly instead of silently serving an open endpoint.
+
+The dashboard sends the token as the `X-Service-Token` header; an
+`Authorization: Bearer <token>` header is also accepted.
 
 Endpoints:
   GET  /health   -- liveness + whether a GPU is actually available right now,
@@ -23,6 +29,9 @@ Endpoints:
                     weights -- expect gibberish output. This endpoint is
                     proving the *plumbing* works, not reply quality; wiring
                     a real model is a later, separate step.
+                    torch/transformers are NOT in the default requirements
+                    (see requirements-inference.txt) -- /chat returns 503
+                    until they're installed, on purpose.
   POST /cancel   -- best-effort cancel of an in-flight generation (no
                     actual generations are tracked as cancellable yet in
                     this first pass, since generate() here is synchronous
@@ -32,15 +41,17 @@ Endpoints:
 """
 from __future__ import annotations
 
+import hmac
 import os
 import uuid
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 app = FastAPI(title="NVIDIA Lightning Inference Service")
 
-AUTH_TOKEN = os.environ.get("LIGHTNING_SERVICE_TOKEN", "")
+SERVICE_TOKEN = os.environ.get("LIGHTNING_SERVICE_TOKEN", "")
 DEFAULT_MODEL = "sshleifer/tiny-gpt2"
 
 # In-memory model registry -- populated lazily by /chat. Empty on a fresh
@@ -48,11 +59,31 @@ DEFAULT_MODEL = "sshleifer/tiny-gpt2"
 _MODELS: dict = {}
 
 
-def _check_auth(authorization: str | None) -> None:
-    if not AUTH_TOKEN:
-        return  # no token configured -- open; must be set before any public exposure
-    if authorization != f"Bearer {AUTH_TOKEN}":
-        raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
+def _presented_token(request: Request) -> str:
+    tok = request.headers.get("x-service-token", "")
+    if not tok:
+        auth = request.headers.get("authorization", "")
+        if auth.startswith("Bearer "):
+            tok = auth[len("Bearer "):]
+    return tok
+
+
+@app.middleware("http")
+async def require_service_token(request: Request, call_next):
+    """Mandatory shared-secret gate in front of every route."""
+    if not SERVICE_TOKEN:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "LIGHTNING_SERVICE_TOKEN is not configured on the service."},
+        )
+    # hmac.compare_digest is constant-time -- avoids leaking the token
+    # length/prefix through response timing.
+    if not hmac.compare_digest(_presented_token(request), SERVICE_TOKEN):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid or missing X-Service-Token."},
+        )
+    return await call_next(request)
 
 
 def _gpu_info():
@@ -74,8 +105,7 @@ def health():
 
 
 @app.get("/models")
-def models(authorization: str | None = Header(default=None)):
-    _check_auth(authorization)
+def models():
     return {"models": list(_MODELS.keys())}
 
 
@@ -100,9 +130,15 @@ def _ensure_model_loaded(model_name: str):
 
 
 @app.post("/chat")
-def chat(req: ChatRequest, authorization: str | None = Header(default=None)):
-    _check_auth(authorization)
-    import torch
+def chat(req: ChatRequest):
+    try:
+        import torch
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="Inference deps not installed (see requirements-inference.txt). "
+                   "This service only serves /health + /models today.",
+        )
 
     try:
         tok, mod = _ensure_model_loaded(req.model)
@@ -123,8 +159,7 @@ def chat(req: ChatRequest, authorization: str | None = Header(default=None)):
 
 
 @app.post("/cancel")
-def cancel(request_id: str, authorization: str | None = Header(default=None)):
-    _check_auth(authorization)
+def cancel(request_id: str):
     # generate() above is synchronous and short-lived in this first pass --
     # nothing is actually tracked as in-flight/cancellable yet. Honest
     # no-op rather than pretending a cancel took effect.

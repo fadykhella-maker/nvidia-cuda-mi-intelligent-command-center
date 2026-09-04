@@ -255,9 +255,14 @@ def get_lightning_health(timeout: float = 5.0):
     """GET the real FastAPI /health on the Studio over Lightning's public
     URL. Returns the parsed JSON dict on a 200, or None if the service
     isn't reachable (Studio asleep/stopped, service still booting, network
-    error, or a non-JSON "studio sleeping" page). Never raises."""
+    error, a non-JSON "studio sleeping" page, or a 401 because the service
+    token is wrong/missing). Never raises."""
     try:
-        r = requests.get(f"{LIGHTNING_SERVICE_URL}/health", timeout=timeout)
+        r = requests.get(
+            f"{LIGHTNING_SERVICE_URL}/health",
+            headers={"X-Service-Token": LIGHTNING_SERVICE_TOKEN},
+            timeout=timeout,
+        )
         if r.status_code == 200:
             body = r.json()
             if isinstance(body, dict):
