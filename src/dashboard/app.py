@@ -1243,21 +1243,37 @@ kpi_class = "g" if online else "mu"
 gpu_count_name = f"{device_count}× {device_name.replace('Tesla ', '')}" if online else "— offline —"
 cuda_kpi = cuda_version if online else "—"
 
-# Kaggle's OWN reported run status ("running"/"queued"/"complete"/"error"/
-# "unknown") -- a genuinely different signal from GPU BACKEND ONLINE/OFFLINE
-# above, which only says whether the tunnel is currently reachable. This
-# tells you WHY it isn't: still booting (queued/running but tunnel not up
-# yet), cleanly idle (complete, nothing to wake), or actually broken
-# (error). provider_status is computed unconditionally above (read-only
-# poll, no PUBLIC_VIEWER_MODE gate) so this is real for every viewer.
-_PROVIDER_STATUS_PILL_CLASS = {"running": "on", "queued": "warn", "error": "off"}
-provider_status_pill_class = _PROVIDER_STATUS_PILL_CLASS.get(provider_status, "")
-provider_status_text = provider_status.upper() if provider_status != "unknown" else "STATUS UNKNOWN"
-provider_status_title = (
-    f'{active_provider.name} reports "{provider_status}" for the last triggered run'
-    if provider_status != "unknown"
-    else f"{active_provider.name}'s own status couldn't be checked (not configured, or the check itself failed)"
-)
+# Top-strip "GPU BACKEND" pill: an AGGREGATE across every *configured* provider
+# in GPU_PROVIDERS, not Kaggle alone. Online if the live Kaggle kernel check
+# passed OR any configured provider's own get_status() reports "running"
+# (Lightning's /health, and whatever real backend is added next). Offline
+# only when every configured backend is down. Per-provider detail still lives
+# on each provider's own page.
+_configured_provider_states = {
+    _k: provider_statuses.get(_k, ("unknown", ""))[0]
+    for _k, _p in GPU_PROVIDERS.items()
+    if _p.is_configured()
+}
+_online_providers = [k for k, s in _configured_provider_states.items() if s == "running"]
+backend_online = online or bool(_online_providers)
+backend_status_text = "ONLINE" if backend_online else "OFFLINE"
+backend_pill_class = "on" if backend_online else "off"
+if _online_providers:
+    backend_status_title = "Online — {} reporting running".format(
+        ", ".join(GPU_PROVIDERS[k].name for k in _online_providers)
+    )
+elif online:
+    backend_status_title = "Online — live Kaggle kernel check passed"
+elif _configured_provider_states:
+    backend_status_title = "Offline — none of {} is running right now".format(
+        ", ".join(GPU_PROVIDERS[k].name for k in _configured_provider_states)
+    )
+else:
+    backend_status_title = "No GPU provider is configured"
+
+# (provider_status -- the active provider's own run status -- is still
+# computed above and drives the auto-wake logic and each provider's own
+# detail page; it's just no longer surfaced as its own top-strip pill.)
 
 # --- Lightning detail: values for the dedicated Lightning view and its top-
 # strip item. All of it comes from get_lightning_detail() -- the same cached
@@ -1658,9 +1674,7 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
     </div>
   </div>
   <div class="right">
-    <span class="pill {{PILL_CLASS}}" id="headerGpuPill"><span class="dot"></span><span id="headerGpuText">GPU BACKEND {{STATUS_TEXT}}</span></span>
-    <span class="pill {{PROVIDER_STATUS_PILL_CLASS}}" title="{{PROVIDER_STATUS_TITLE}}"><span class="dot"></span>KAGGLE SESSION {{PROVIDER_STATUS_TEXT}}</span>
-    <span class="pill"><span class="dot"></span>APP-TRACKED GPU HOURS {{GPU_HOURS_USED}}/{{GPU_HOURS_BUDGET}}h</span>
+    <span class="pill {{BACKEND_PILL_CLASS}}" id="headerGpuPill" title="{{BACKEND_STATUS_TITLE}}"><span class="dot"></span><span id="headerGpuText">GPU BACKEND {{BACKEND_STATUS_TEXT}}</span></span>
     <div class="gpuproviders" id="gpuProviders" role="button" tabindex="0" aria-label="GPU backend providers" title="GPU backend providers">
       <span class="gplabel">NVIDIA GPU</span>
       <span class="gpitem {{PILL_CLASS}}"><i class="gpdot"></i>Kaggle</span>
@@ -2193,7 +2207,7 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
   };
 
   document.getElementById('gpuProviders').addEventListener('click', function(){
-    showToast('Kaggle is the only backend actually wired up right now — AWS/Azure/GCP are shown for the roadmap, not connected. Kaggle also has no API to start or stop a session remotely; go start/stop it on kaggle.com directly, then reconnect here with the fresh tunnel URL/token.');
+    showToast('Kaggle and Lightning are both real backends (click Lightning for its own page). AWS/Azure/GCP are roadmap placeholders, not connected. Kaggle has no API to start/stop a session remotely — do that on kaggle.com, then reconnect here with the fresh tunnel URL/token.');
   });
 
   var recheckBtn = document.getElementById('recheckBtn');
@@ -2210,9 +2224,9 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
 html = HTML_TEMPLATE
 html = html.replace("{{NVIDIA_ICON_DATA_URI}}", NVIDIA_ICON_DATA_URI)
 html = html.replace("{{PILL_CLASS}}", pill_class)
-html = html.replace("{{PROVIDER_STATUS_PILL_CLASS}}", provider_status_pill_class)
-html = html.replace("{{PROVIDER_STATUS_TEXT}}", esc(provider_status_text))
-html = html.replace("{{PROVIDER_STATUS_TITLE}}", esc(provider_status_title))
+html = html.replace("{{BACKEND_PILL_CLASS}}", backend_pill_class)
+html = html.replace("{{BACKEND_STATUS_TEXT}}", backend_status_text)
+html = html.replace("{{BACKEND_STATUS_TITLE}}", esc(backend_status_title))
 html = html.replace("{{STATUS_TEXT}}", status_text)
 html = html.replace("{{STATUS_TEXT_LOWER}}", "confirmed live" if online else "not reachable right now")
 html = html.replace("{{KPI_CLASS}}", kpi_class)
