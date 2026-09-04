@@ -406,6 +406,7 @@ def wake_kaggle():
     return True, "Kernel run triggered — this takes roughly 1-2 minutes before the tunnel comes up."
 
 
+@st.cache_data(ttl=15, show_spinner=False)
 def get_kaggle_status():
     """Ask Kaggle itself what the last triggered run is actually doing --
     the real ground truth ('running', 'queued', 'complete', 'error', ...),
@@ -1080,8 +1081,14 @@ if not PUBLIC_VIEWER_MODE:
         st.query_params.clear()
         st.rerun()
 
-with st.spinner("Checking the live Kaggle kernel..."):
-    info_ok, info_out = run_remote(
+@st.cache_data(ttl=15, show_spinner=False)
+def check_kaggle_gpu_reachable():
+    """Real nvidia-smi/torch check on the live Kaggle kernel, over the same
+    run_remote() wire call as before -- just cached now (ttl=15s) so the
+    sidebar's live fragment (which reruns every 15s on its own) and the main
+    script don't each pay for a fresh execute_request on every rerun.
+    Returns (ok, output_text), unchanged shape from the old inline call."""
+    return run_remote(
         "import subprocess, json, torch\n"
         "try:\n"
         "    smi = subprocess.run(['nvidia-smi'], capture_output=True, text=True).stdout\n"
@@ -1097,6 +1104,10 @@ with st.spinner("Checking the live Kaggle kernel..."):
         "print(json.dumps(info))"
     )
 
+
+with st.spinner("Checking the live Kaggle kernel..."):
+    info_ok, info_out = check_kaggle_gpu_reachable()
+
 info = None
 if info_ok:
     try:
@@ -1105,6 +1116,94 @@ if info_ok:
         info_ok = False
 
 online = bool(info_ok and info and info.get("cuda_available"))
+
+# --- Reusable hw-state derivation, provider-agnostic call sites -----------
+# Both functions live here (ahead of resolve_active_gpu_provider() and the
+# sidebar) so they're already defined by the time the live sidebar fragment
+# (Step 3, just below) needs them -- as well as by their original call sites
+# further down, which feed the static iframe's kaggle_hw_row/lightning_hw_row
+# unchanged. Kept as plain functions (not methods on GPUProvider) since their
+# inputs come from different places per provider (a cached /health+SDK dict
+# for Lightning; loose values already being computed inline for Kaggle).
+
+
+def compute_lightning_hw_state(detail):
+    """(cpu_state, gpu_state) for Lightning's hardware chips, derived from a
+    get_lightning_detail() dict. Pulled out into its own function so the
+    static iframe row and the live sidebar fragment always derive the exact
+    same states from the exact same detail -- they can't drift apart.
+
+    Hardware chips: one live ONLINE/OFFLINE per compute tier the Studio can
+    run on. The SDK's real machine tier is ground truth; /health's
+    gpu_available is the fallback only if the SDK read failed while the
+    service is up. Studio asleep -> both OFFLINE (never one wrongly ON)."""
+    configured = detail["configured"]
+    health = detail["health"]
+    machine = detail["machine"]
+    studio_awake = detail["sdk_status"] == "running" or health is not None
+    if not configured:
+        return "unknown", "unknown"
+    if not studio_awake:
+        return "offline", "offline"
+    if machine:
+        on_cpu = machine.upper().startswith("CPU")
+        return ("online", "offline") if on_cpu else ("offline", "online")
+    if health is not None:
+        on_gpu = bool(health.get("gpu_available"))
+        return ("offline", "online") if on_gpu else ("online", "offline")
+    return "unknown", "unknown"
+
+
+def compute_kaggle_hw_state(kaggle_run_status, info_ok, online, gpu_hours_used, error_log):
+    """(service_state, service_note, gpu_state, gpu_note) for Kaggle's
+    hardware chips. Pulled out into its own function so the static iframe
+    row and the live sidebar fragment always derive the exact same states
+    from the exact same inputs -- they can't drift apart. jupyter_url/
+    jupyter_token/GPU_HOUR_BUDGET are read as module globals (unchanged from
+    before); everything that varies per-call is a parameter so the fragment
+    can feed it its own fresh values.
+
+    Same reusable chip pattern as Lightning, but Kaggle's two independent
+    signals are "is the kernel reachable" vs "is GPU compute actually usable":
+
+      Service     -- did run_remote() reach the kernel this load (info_ok), or
+                     does Kaggle's own run status say "running"
+      GPU (T4x2)  -- did the real torch.cuda.is_available() check pass (online).
+                     If the service is up but CUDA isn't, the usual Kaggle
+                     cause is an exhausted weekly GPU quota -- and the only
+                     real evidence we have for that is (a) the crash log
+                     mentioning quota (that IS from Kaggle's API) or (b) this
+                     app's own observed GPU-hour log being at/over budget.
+                     Kaggle exposes no quota API and no reset time, so there
+                     is deliberately NO countdown here -- just "out of GPU
+                     quota" and a pointer to kaggle.com."""
+    kaggle_configured = bool(jupyter_url and jupyter_token)
+    kaggle_service_reachable = bool(info_ok) or kaggle_run_status == "running"
+
+    if not kaggle_configured:
+        service_state, service_note = "unknown", "not configured"
+    elif kaggle_service_reachable:
+        service_state, service_note = "online", None
+    elif kaggle_run_status in ("queued", "running"):
+        service_state, service_note = "offline", "kernel still booting"
+    else:
+        service_state, service_note = "offline", None
+
+    quota_exhausted = (
+        gpu_hours_used >= GPU_HOUR_BUDGET
+        or "quota" in (error_log or "").lower()
+    )
+    if online:
+        gpu_state, gpu_note = "online", None
+    elif not kaggle_service_reachable:
+        gpu_state, gpu_note = "offline", None
+    elif quota_exhausted:
+        gpu_state, gpu_note = "offline", "out of GPU quota"
+    else:
+        gpu_state, gpu_note = "offline", "GPU not attached to this kernel"
+
+    return service_state, service_note, gpu_state, gpu_note
+
 
 # --- Auto-wake: if we're offline, trigger the active GPU provider
 # automatically -- no button needed. Routed through GPU_PROVIDERS so this
@@ -1138,12 +1237,47 @@ wake_message = None
 provider_status, provider_status_raw = provider_statuses.get(active_provider_key, ("unknown", ""))
 provider_error_log = ""
 
+# Native-DOM twin of the iframe's .hwrow/.hwchip CSS (HTML_TEMPLATE, below)
+# -- the sidebar renders into the real Streamlit page, not into that
+# iframe, so none of the iframe's CSS custom properties (var(--nv), etc.)
+# reach it. Same class names hw_status_row()/hw_status_chip() already emit;
+# concrete colors here instead of the iframe's theme variables, since this
+# is a different DOM with its own (Streamlit-managed) theming.
+st.markdown(
+    """<style>
+.hwrow{display:flex;flex-wrap:wrap;gap:6px;margin:2px 0 10px}
+.hwchip{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;
+  border:1px solid rgba(128,128,128,.35);border-radius:8px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px}
+.hwchip .hwdot{width:7px;height:7px;border-radius:50%;flex:none;
+  border:1.3px solid rgba(128,128,128,.55);background:transparent}
+.hwchip .hwlbl{opacity:.7}
+.hwchip .hwstate{font-size:9.5px;letter-spacing:.06em;opacity:.6}
+.hwchip .hwnote{font-size:9px;color:#c98a1c}
+.hwchip.hw-online{border-color:rgba(47,179,86,.5)}
+.hwchip.hw-online .hwdot{background:#2fb356;border-color:#2fb356;box-shadow:0 0 5px rgba(47,179,86,.6)}
+.hwchip.hw-online .hwstate{color:#2fb356;opacity:1}
+</style>""",
+    unsafe_allow_html=True,
+)
+
 # Real, native Streamlit UI (not the decorative components.html() iframe --
 # a genuinely working selector needs a real backend connection, same
 # reasoning as the sidebar Settings toggle above it). A manual pick always
 # wins; "Automatic" (the default) is what resolve_active_gpu_provider()
 # above already used to pick active_provider.
-with st.sidebar:
+@st.fragment(run_every=15)
+def gpu_providers_sidebar_fragment():
+    """Live sidebar GPU-provider panel. Reruns independently every 15s (like
+    bond_autoload_fragment/bond_widget_fragment below) so the status dots and
+    the per-hardware chips actually refresh on their own -- previously this
+    whole panel was baked once into the static components.html() iframe,
+    which never redraws after the initial page load. Calls
+    resolve_active_gpu_provider() itself rather than reusing the outer
+    script's copy, since a fragment reruns on its own schedule, independent
+    of the main script around it."""
+    _active_provider, _active_provider_key, _provider_statuses = resolve_active_gpu_provider()
+
     st.markdown("### 🖥️ GPU Providers")
     _status_dot = {"running": "🟢", "queued": "🟡", "error": "🔴"}
     for _key in GPU_PROVIDER_PRIORITY:
@@ -1151,7 +1285,7 @@ with st.sidebar:
         if not _provider.is_configured():
             st.caption(f"⚪ {_provider.name} — not configured")
             continue
-        _status, _ = provider_statuses.get(_key, ("unknown", ""))
+        _status, _ = _provider_statuses.get(_key, ("unknown", ""))
         _pcol, _wcol = st.columns([3, 1])
         with _pcol:
             st.caption(f"{_status_dot.get(_status, '⚪')} **{_provider.name}** — {_status}")
@@ -1170,6 +1304,40 @@ with st.sidebar:
                     st.toast(_wmsg if _wok else f"⚠️ {_wmsg}")
                 else:
                     st.toast("Already triggered recently — give it a bit longer.")
+
+        # Live per-hardware chips -- this is the part that was dead on
+        # arrival before: the iframe below renders the same chips, but only
+        # once, on the initial page load. Same compute_*_hw_state()
+        # functions the iframe rows use, so the sidebar can never show
+        # something different from what the GPU tab / Lightning page say.
+        if _key == "kaggle":
+            _k_info_ok, _k_info_out = check_kaggle_gpu_reachable()
+            _k_info = None
+            if _k_info_ok:
+                try:
+                    _k_info = json.loads(_k_info_out)
+                except Exception:
+                    _k_info_ok = False
+            _k_online = bool(_k_info_ok and _k_info and _k_info.get("cuda_available"))
+            # No fresh crash-log fetch here -- that's a real Kaggle API call
+            # (kaggle kernels output), too slow/heavy to repeat on every 15s
+            # fragment tick. The quota note still fires off the observed-
+            # usage signal; the error-log signal is a bonus the full page
+            # load computes but this fast tick doesn't.
+            _svc_state, _svc_note, _gpu_state, _gpu_note = compute_kaggle_hw_state(
+                _status, _k_info_ok, _k_online, read_gpu_hours_used(), ""
+            )
+            st.markdown(
+                hw_status_row([("Service", _svc_state, _svc_note), ("GPU (T4×2)", _gpu_state, _gpu_note)]),
+                unsafe_allow_html=True,
+            )
+        elif _key == "lightning":
+            _lt_cpu_state, _lt_gpu_state = compute_lightning_hw_state(get_lightning_detail())
+            st.markdown(
+                hw_status_row([("CPU", _lt_cpu_state), ("GPU (T4)", _lt_gpu_state)]),
+                unsafe_allow_html=True,
+            )
+
     st.caption("⚪ Azure · AWS · GCP — planned, not yet configured")
 
     _provider_options = ["automatic"] + GPU_PROVIDER_PRIORITY
@@ -1181,7 +1349,11 @@ with st.sidebar:
         key="gpu_provider_choice",
         help="Automatic picks the first healthy configured provider (Kaggle, then Lightning). Picking one by hand always uses that one, healthy or not.",
     )
-    st.caption(f"Resolved right now: **{active_provider.name}**")
+    st.caption(f"Resolved right now: **{_active_provider.name}**")
+
+
+with st.sidebar:
+    gpu_providers_sidebar_fragment()
 
 # Auto-wake is always on -- no toggle, no opt-in, and (deliberately, per
 # explicit decision) no longer gated behind PUBLIC_VIEWER_MODE the way the
@@ -1294,23 +1466,7 @@ lightning_status, lightning_status_raw = provider_statuses.get(
 lightning_health = _lightning_detail["health"]
 lightning_machine = _lightning_detail["machine"]  # 'CPU' / 'T4' / ... / None, from the SDK
 
-# Hardware chips: one live ONLINE/OFFLINE per compute tier the Studio can run
-# on. The SDK's real machine tier is ground truth; /health's gpu_available is
-# the fallback only if the SDK read failed while the service is up. Studio
-# asleep -> both OFFLINE (never one wrongly ON).
-_studio_awake = _lightning_detail["sdk_status"] == "running" or lightning_health is not None
-if not lightning_configured:
-    _cpu_state, _gpu_state = "unknown", "unknown"
-elif not _studio_awake:
-    _cpu_state, _gpu_state = "offline", "offline"
-elif lightning_machine:
-    _on_cpu = lightning_machine.upper().startswith("CPU")
-    _cpu_state, _gpu_state = ("online", "offline") if _on_cpu else ("offline", "online")
-elif lightning_health is not None:
-    _on_gpu = bool(lightning_health.get("gpu_available"))
-    _cpu_state, _gpu_state = ("offline", "online") if _on_gpu else ("online", "offline")
-else:
-    _cpu_state, _gpu_state = "unknown", "unknown"
+_cpu_state, _gpu_state = compute_lightning_hw_state(_lightning_detail)
 lightning_hw_row = hw_status_row([("CPU", _cpu_state), ("GPU (T4)", _gpu_state)])
 
 # Short tier label still used in the connection sentence below.
@@ -1449,46 +1605,10 @@ gpu_hours_note_html = (
 )
 
 # --- Kaggle service / GPU hardware chips (GPU tab) ------------------------
-# Same reusable chip pattern as Lightning, but Kaggle's two independent
-# signals are "is the kernel reachable" vs "is GPU compute actually usable":
-#
-#   Service     -- did run_remote() reach the kernel this load (info_ok), or
-#                  does Kaggle's own run status say "running"
-#   GPU (T4x2)  -- did the real torch.cuda.is_available() check pass (online).
-#                  If the service is up but CUDA isn't, the usual Kaggle
-#                  cause is an exhausted weekly GPU quota -- and the only
-#                  real evidence we have for that is (a) the crash log
-#                  mentioning quota (that IS from Kaggle's API) or (b) this
-#                  app's own observed GPU-hour log being at/over budget.
-#                  Kaggle exposes no quota API and no reset time, so there
-#                  is deliberately NO countdown here -- just "out of GPU
-#                  quota" and a pointer to kaggle.com.
-kaggle_configured = bool(jupyter_url and jupyter_token)
 _kaggle_run_status = provider_statuses.get("kaggle", ("unknown", ""))[0]
-kaggle_service_reachable = bool(info_ok) or _kaggle_run_status == "running"
-
-if not kaggle_configured:
-    kaggle_service_state, kaggle_service_note = "unknown", "not configured"
-elif kaggle_service_reachable:
-    kaggle_service_state, kaggle_service_note = "online", None
-elif _kaggle_run_status in ("queued", "running"):
-    kaggle_service_state, kaggle_service_note = "offline", "kernel still booting"
-else:
-    kaggle_service_state, kaggle_service_note = "offline", None
-
-_quota_exhausted = (
-    gpu_hours_used >= GPU_HOUR_BUDGET
-    or "quota" in (provider_error_log or "").lower()
+kaggle_service_state, kaggle_service_note, kaggle_gpu_state, kaggle_gpu_note = compute_kaggle_hw_state(
+    _kaggle_run_status, info_ok, online, gpu_hours_used, provider_error_log
 )
-if online:
-    kaggle_gpu_state, kaggle_gpu_note = "online", None
-elif not kaggle_service_reachable:
-    kaggle_gpu_state, kaggle_gpu_note = "offline", None
-elif _quota_exhausted:
-    kaggle_gpu_state, kaggle_gpu_note = "offline", "out of GPU quota"
-else:
-    kaggle_gpu_state, kaggle_gpu_note = "offline", "GPU not attached to this kernel"
-
 kaggle_hw_row = hw_status_row([
     ("Service", kaggle_service_state, kaggle_service_note),
     ("GPU (T4×2)", kaggle_gpu_state, kaggle_gpu_note),
