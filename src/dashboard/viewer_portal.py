@@ -3,10 +3,33 @@
 from __future__ import annotations
 
 import base64
+import time
 from pathlib import Path
 
 import streamlit as st
 import streamlit_authenticator as stauth
+import extra_streamlit_components as stx
+
+
+# --- Cookie hardening ------------------------------------------------------
+# streamlit-authenticator persists its re-auth cookie through
+# extra-streamlit-components' CookieManager, which defaults to
+# SameSite=Strict and gives Authenticate() no way to override it. Strict
+# means the browser withholds the cookie whenever the app is *arrived at*
+# via a cross-site navigation -- a share.streamlit.io redirect, an external
+# link, an embed -- so that first load shows the login screen even with a
+# valid 30-day cookie sitting in the browser. Lax still blocks the cookie
+# on cross-site POSTs (all we need for CSRF safety on a re-auth cookie) but
+# sends it on top-level cross-site GETs. Patch the default once, at import.
+if not getattr(stx.CookieManager.set, "_nv_lax", False):
+    _cm_set_orig = stx.CookieManager.set
+
+    def _cm_set_lax(*args, **kwargs):
+        kwargs.setdefault("same_site", "lax")
+        return _cm_set_orig(*args, **kwargs)
+
+    _cm_set_lax._nv_lax = True
+    stx.CookieManager.set = _cm_set_lax
 
 
 def _auth_secret(name: str, default=""):
@@ -67,6 +90,18 @@ def require_viewer() -> dict[str, str]:
         cookie_expiry_days,
         auto_hash=False,
     )
+
+    # "Remember" unchecked must actively forget the device, not merely skip
+    # writing a fresh cookie: without this, an earlier remember=True cookie
+    # keeps the session alive against the user's explicit choice, because
+    # cookie_expiry_days=0 only makes streamlit-authenticator's set_cookie()
+    # a no-op -- it never clears what's already there.
+    if not remember:
+        try:
+            authenticator.cookie_controller.delete_cookie()
+        except Exception:
+            pass
+
     authenticator.login(location="unrendered")
     if st.session_state.get("authentication_status") is True:
         if "viewer" not in (st.session_state.get("roles") or []):
@@ -105,7 +140,24 @@ def require_viewer() -> dict[str, str]:
     if "viewer" not in (st.session_state.get("roles") or []):
         st.error("This account does not have viewer access.")
         st.stop()
-    # Do not call st.rerun() here. CookieManager writes the signed browser
-    # cookie from the frontend after this script run completes; an immediate
-    # rerun can interrupt that write and force another login on the next visit.
+
+    # The form login just succeeded on THIS run. streamlit-authenticator only
+    # fires its own confirming st.rerun() for YAML-*file* credentials
+    # (self.path); with dict credentials it returns straight on, and app.py
+    # immediately renders the full ~2000-line dashboard in the same run. The
+    # CookieManager's document.cookie write then races that render, and a
+    # refresh in the first moment after login lands before it persists ->
+    # "log in, refresh now, still logged out".
+    #
+    # Fix: pause briefly so the component's set message reaches and runs on
+    # the frontend, then rerun once. authentication_status is already True in
+    # session_state, so the next run returns immediately at the cookie-restore
+    # branch above and the dashboard renders then -- run N stays small and the
+    # cookie write gets a clean, uncluttered window. Guarded so it happens at
+    # most once per session (no loop if the write still needs another visit).
+    if remember and not st.session_state.get("_nv_cookie_flush_done"):
+        st.session_state["_nv_cookie_flush_done"] = True
+        time.sleep(0.6)
+        st.rerun()
+
     return {"username": username, "role": "viewer"}

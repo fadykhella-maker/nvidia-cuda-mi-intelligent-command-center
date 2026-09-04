@@ -4,5 +4,8 @@ websocket-client
 kaggle
 pillow
 streamlit-authenticator>=0.4.2,<0.5
+# transitive via streamlit-authenticator, pinned because viewer_portal.py
+# imports it directly to force the re-auth cookie to SameSite=Lax
+extra-streamlit-components>=0.1.71
 bcrypt>=4.2,<5
 lightning-sdk
