@@ -1420,34 +1420,6 @@ kpi_class = "g" if online else "mu"
 gpu_count_name = f"{device_count}× {device_name.replace('Tesla ', '')}" if online else "— offline —"
 cuda_kpi = cuda_version if online else "—"
 
-# Top-strip "GPU BACKEND" pill: an AGGREGATE across every *configured* provider
-# in GPU_PROVIDERS, not Kaggle alone. Online if the live Kaggle kernel check
-# passed OR any configured provider's own get_status() reports "running"
-# (Lightning's /health, and whatever real backend is added next). Offline
-# only when every configured backend is down. Per-provider detail still lives
-# on each provider's own page.
-_configured_provider_states = {
-    _k: provider_statuses.get(_k, ("unknown", ""))[0]
-    for _k, _p in GPU_PROVIDERS.items()
-    if _p.is_configured()
-}
-_online_providers = [k for k, s in _configured_provider_states.items() if s == "running"]
-backend_online = online or bool(_online_providers)
-backend_status_text = "ONLINE" if backend_online else "OFFLINE"
-backend_pill_class = "on" if backend_online else "off"
-if _online_providers:
-    backend_status_title = "Online — {} reporting running".format(
-        ", ".join(GPU_PROVIDERS[k].name for k in _online_providers)
-    )
-elif online:
-    backend_status_title = "Online — live Kaggle kernel check passed"
-elif _configured_provider_states:
-    backend_status_title = "Offline — none of {} is running right now".format(
-        ", ".join(GPU_PROVIDERS[k].name for k in _configured_provider_states)
-    )
-else:
-    backend_status_title = "No GPU provider is configured"
-
 # (provider_status -- the active provider's own run status -- is still
 # computed above and drives the auto-wake logic and each provider's own
 # detail page; it's just no longer surfaced as its own top-strip pill.)
@@ -1858,10 +1830,9 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
     </div>
   </div>
   <div class="right">
-    <span class="pill {{BACKEND_PILL_CLASS}}" id="headerGpuPill" title="{{BACKEND_STATUS_TITLE}}"><span class="dot"></span><span id="headerGpuText">GPU BACKEND {{BACKEND_STATUS_TEXT}}</span></span>
     <div class="gpuproviders" id="gpuProviders" role="button" tabindex="0" aria-label="GPU backend providers" title="GPU backend providers">
       <span class="gplabel">NVIDIA GPU</span>
-      <span class="gpitem {{PILL_CLASS}}"><i class="gpdot"></i>Kaggle</span>
+      <span class="gpitem link {{PILL_CLASS}}" id="gpKaggle" title="Kaggle — open the GPU page" onclick="event.stopPropagation();miShowView('gpu')"><i class="gpdot"></i>Kaggle</span>
       <span class="gpitem link {{LIGHTNING_STRIP_CLASS}}" id="gpLightning" title="Lightning — open the Lightning page" onclick="event.stopPropagation();miShowView('lightning')"><i class="gpdot"></i>Lightning</span>
       <span class="gpitem off"><i class="gpdot"></i>AWS</span>
       <span class="gpitem off"><i class="gpdot"></i>Azure</span>
@@ -2306,13 +2277,13 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
         <div class="s">Kaggle and Lightning status are real; AWS/Azure/GCP are placeholders</div></div>
       </div>
       <div class="syncbox-row">
-        <span class="gpitem {{PILL_CLASS}}"><i class="gpdot"></i>Kaggle</span>
+        <span class="gpitem link {{PILL_CLASS}}" title="Kaggle — open the GPU page" onclick="event.stopPropagation();miShowView('gpu')"><i class="gpdot"></i>Kaggle</span>
         <span class="gpitem link {{LIGHTNING_STRIP_CLASS}}" onclick="miShowView('lightning')"><i class="gpdot"></i>Lightning</span>
         <span class="gpitem off"><i class="gpdot"></i>AWS</span>
         <span class="gpitem off"><i class="gpdot"></i>Azure</span>
         <span class="gpitem off"><i class="gpdot"></i>GCP</span>
       </div>
-      <div class="tip">Kaggle's LED reflects the real live check, same as GPU BACKEND above. AWS/Azure/GCP are always off — there's no multi-cloud switching built yet, this is just marking where it would go once that's actually scoped. Clicking the row doesn't switch providers; it only shows a note about Kaggle's own start/stop limitations.</div>
+      <div class="tip">Kaggle's LED reflects the real live check, same as GPU BACKEND above. Click Kaggle or Lightning to jump to that provider's own page. AWS/Azure/GCP are always off — there's no multi-cloud switching built yet, this is just marking where it would go once that's actually scoped.</div>
     </div>
   </div>
 </section>
@@ -2397,7 +2368,7 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
   };
 
   document.getElementById('gpuProviders').addEventListener('click', function(){
-    showToast('Kaggle and Lightning are both real backends (click Lightning for its own page). AWS/Azure/GCP are roadmap placeholders, not connected. Kaggle has no API to start/stop a session remotely — do that on kaggle.com, then reconnect here with the fresh tunnel URL/token.');
+    showToast('Click Kaggle or Lightning to open that provider\'s own page. AWS/Azure/GCP are roadmap placeholders, not connected. Kaggle has no API to start/stop a session remotely — do that on kaggle.com, then reconnect here with the fresh tunnel URL/token.');
   });
 
   var recheckBtn = document.getElementById('recheckBtn');
@@ -2414,9 +2385,6 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
 html = HTML_TEMPLATE
 html = html.replace("{{NVIDIA_ICON_DATA_URI}}", NVIDIA_ICON_DATA_URI)
 html = html.replace("{{PILL_CLASS}}", pill_class)
-html = html.replace("{{BACKEND_PILL_CLASS}}", backend_pill_class)
-html = html.replace("{{BACKEND_STATUS_TEXT}}", backend_status_text)
-html = html.replace("{{BACKEND_STATUS_TITLE}}", esc(backend_status_title))
 html = html.replace("{{STATUS_TEXT}}", status_text)
 html = html.replace("{{STATUS_TEXT_LOWER}}", "confirmed live" if online else "not reachable right now")
 html = html.replace("{{KPI_CLASS}}", kpi_class)
