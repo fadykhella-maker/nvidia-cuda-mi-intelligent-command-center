@@ -44,6 +44,7 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 
 import requests
@@ -142,9 +143,29 @@ def get_secret(name: str, default=""):
     Streamlit Cloud always has the secrets file, while a fresh local checkout
     may not.  In that case the dashboard should still open and show its normal
     connection form instead of crashing before the UI renders.
+
+    Every secret this app reads (LIGHTNING_API_KEY, KAGGLE_API_TOKEN, etc.) is
+    meant to live at the TOP LEVEL of secrets.toml -- outside any [table]
+    header. Streamlit Cloud's secrets editor is a single free-text box, so
+    it's easy to paste a new key underneath an existing [auth] (or similar)
+    header by mistake; TOML then silently nests it inside that table instead
+    of raising an error, and a plain top-level st.secrets.get(name) returns
+    the default as if the key were simply missing -- "NOT CONFIGURED" even
+    though the value is sitting right there, just one level too deep. Once
+    the top-level lookup misses, fall back to a shallow scan of every nested
+    table for the same key name, so a value that ended up misplaced under a
+    stray header is still picked up rather than silently ignored.
     """
     try:
-        return st.secrets.get(name, default)
+        value = st.secrets.get(name, None)
+        if value not in (None, ""):
+            return value
+        for _section in st.secrets.values():
+            if isinstance(_section, Mapping) and name in _section:
+                nested_value = _section.get(name)
+                if nested_value not in (None, ""):
+                    return nested_value
+        return default
     except FileNotFoundError:
         return default
 
@@ -1815,6 +1836,12 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
   <button class="nav" data-view="agents"><span class="ico"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.4"/><rect x="13" y="4" width="7" height="7" rx="1.4"/><rect x="4" y="13" width="7" height="7" rx="1.4"/><rect x="13" y="13" width="7" height="7" rx="1.4"/></svg></span><span class="cap">Agents</span></button>
   <button class="nav" data-view="tokens"><span class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v9M9 10h4.2a1.8 1.8 0 0 1 0 3.6H9m2-7v1.2m0 9.6V17.4"/></svg></span><span class="cap">Tokens</span></button>
   <button class="nav" data-view="lightning"><span class="ico"><svg viewBox="0 0 24 24"><path d="M13 2 4.5 13.5H11l-1 8.5L19.5 10H13z"/></svg></span><span class="cap">Lightning</span></button>
+  <div class="sep" title="GPU providers, in order"></div>
+  <button class="nav" data-view="prov-aws"><span class="ico"><svg viewBox="0 0 24 24"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg></span><span class="cap">AWS</span></button>
+  <button class="nav" data-view="prov-azure"><span class="ico"><svg viewBox="0 0 24 24"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg></span><span class="cap">Azure</span></button>
+  <button class="nav" data-view="prov-gcp"><span class="ico"><svg viewBox="0 0 24 24"><path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/></svg></span><span class="cap">GCP</span></button>
+  <button class="nav" data-view="gpu"><span class="ico"><svg viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 6V3M12 6V3M17 6V3M7 21v-3M12 21v-3M17 21v-3"/></svg></span><span class="cap">Kaggle</span></button>
+  <button class="nav" data-view="lightning"><span class="ico"><svg viewBox="0 0 24 24"><path d="M13 2 4.5 13.5H11l-1 8.5L19.5 10H13z"/></svg></span><span class="cap">Lightning</span></button>
   <div class="spacer"></div>
   <button class="nav" data-view="settings"><span class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></span><span class="cap">Settings</span></button>
   <button class="nav" data-view="about"><span class="ico"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.6v.1"/></svg></span><span class="cap">About</span></button>
@@ -1832,11 +1859,11 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
   <div class="right">
     <div class="gpuproviders" id="gpuProviders" role="button" tabindex="0" aria-label="GPU backend providers" title="GPU backend providers">
       <span class="gplabel">NVIDIA GPU</span>
-      <span class="gpitem link {{PILL_CLASS}}" id="gpKaggle" title="Kaggle — open the GPU page" onclick="event.stopPropagation();miShowView('gpu')"><i class="gpdot"></i>Kaggle</span>
-      <span class="gpitem link {{LIGHTNING_STRIP_CLASS}}" id="gpLightning" title="Lightning — open the Lightning page" onclick="event.stopPropagation();miShowView('lightning')"><i class="gpdot"></i>Lightning</span>
       <span class="gpitem off"><i class="gpdot"></i>AWS</span>
       <span class="gpitem off"><i class="gpdot"></i>Azure</span>
       <span class="gpitem off"><i class="gpdot"></i>GCP</span>
+      <span class="gpitem link {{PILL_CLASS}}" id="gpKaggle" title="Kaggle — open the GPU page" onclick="event.stopPropagation();miShowView('gpu')"><i class="gpdot"></i>Kaggle</span>
+      <span class="gpitem link {{LIGHTNING_STRIP_CLASS}}" id="gpLightning" title="Lightning — open the Lightning page" onclick="event.stopPropagation();miShowView('lightning')"><i class="gpdot"></i>Lightning</span>
     </div>
     <button class="themebtn" id="themeBtn" aria-label="Toggle bright / dark mode" title="Toggle bright / dark mode">
       <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v3M12 18.5v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2.5 12h3M18.5 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>
@@ -2171,6 +2198,69 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
   </div>
 </section>
 
+<section class="view" id="prov-aws">
+  <div class="lead">
+    <h2>AWS <span class="g">GPU backend</span></h2>
+    <p>Not wired up — no credentials, no live status check, no GPU launch. Same honesty rule as everywhere else here: this is a placeholder page, not a connection.</p>
+  </div>
+  <div class="card" style="max-width:520px">
+    <div class="head"><div><div class="t">Status</div></div>
+      <span class="pill"><span class="dot"></span>NOT CONFIGURED</span></div>
+    <div class="tip">{{AWS_STATUS_MSG}}</div>
+  </div>
+  <div class="group">
+    <div class="group-title"><span class="bar"></span><h3>What it would take to turn this on</h3><span class="note">real pricing already researched, from ai-infra-agent-platform.md</span></div>
+    <div class="scroll-x">
+      <table class="tbl">
+        <thead><tr><th>Provider</th><th>T4 on-demand</th><th>T4 spot</th><th>Gate</th></tr></thead>
+        <tbody>
+          <tr><td><b>AWS</b></td><td>~$0.526/hr</td><td>~$0.3661/hr</td><td>quota-increase request required</td></tr>
+          <tr><td>Azure</td><td>~$0.526/hr (near-identical)</td><td>~$0.10/hr (cheapest researched)</td><td>quota-increase request required</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="tip warn">Neither AWS nor Azure currently has that quota increase granted — this table is cost research, not a live connection. Kaggle and Lightning remain the two real, working backends.</div>
+  </div>
+</section>
+
+<section class="view" id="prov-azure">
+  <div class="lead">
+    <h2>Microsoft Azure <span class="g">GPU backend</span></h2>
+    <p>Not wired up — no credentials, no live status check, no GPU launch. Same honesty rule as everywhere else here: this is a placeholder page, not a connection.</p>
+  </div>
+  <div class="card" style="max-width:520px">
+    <div class="head"><div><div class="t">Status</div></div>
+      <span class="pill"><span class="dot"></span>NOT CONFIGURED</span></div>
+    <div class="tip">{{AZURE_STATUS_MSG}}</div>
+  </div>
+  <div class="group">
+    <div class="group-title"><span class="bar"></span><h3>What it would take to turn this on</h3><span class="note">real pricing already researched, from ai-infra-agent-platform.md</span></div>
+    <div class="scroll-x">
+      <table class="tbl">
+        <thead><tr><th>Provider</th><th>T4 on-demand</th><th>T4 spot</th><th>Gate</th></tr></thead>
+        <tbody>
+          <tr><td><b>Azure</b></td><td>~$0.526/hr (near-identical to AWS)</td><td>~$0.10/hr (cheapest researched)</td><td>quota-increase request required</td></tr>
+          <tr><td>AWS</td><td>~$0.526/hr</td><td>~$0.3661/hr</td><td>quota-increase request required</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="tip warn">Azure Spot beats every other option researched so far — but the quota increase to actually use it hasn't been requested yet. Kaggle and Lightning remain the two real, working backends.</div>
+  </div>
+</section>
+
+<section class="view" id="prov-gcp">
+  <div class="lead">
+    <h2>Google Cloud <span class="g">GPU backend</span></h2>
+    <p>Not wired up — no credentials, no live status check, no GPU launch. Same honesty rule as everywhere else here: this is a placeholder page, not a connection.</p>
+  </div>
+  <div class="card" style="max-width:520px">
+    <div class="head"><div><div class="t">Status</div></div>
+      <span class="pill"><span class="dot"></span>NOT CONFIGURED</span></div>
+    <div class="tip">{{GCP_STATUS_MSG}}</div>
+  </div>
+  <div class="tip warn">Unlike AWS/Azure, GCP T4 pricing hasn't been researched yet — nothing is shown here rather than a guessed number. Kaggle and Lightning remain the two real, working backends.</div>
+</section>
+
 <section class="view" id="lightning">
   <div class="lead">
     <h2>Lightning <span class="g">AI Studio</span></h2>
@@ -2277,11 +2367,11 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
         <div class="s">Kaggle and Lightning status are real; AWS/Azure/GCP are placeholders</div></div>
       </div>
       <div class="syncbox-row">
-        <span class="gpitem link {{PILL_CLASS}}" title="Kaggle — open the GPU page" onclick="event.stopPropagation();miShowView('gpu')"><i class="gpdot"></i>Kaggle</span>
-        <span class="gpitem link {{LIGHTNING_STRIP_CLASS}}" onclick="miShowView('lightning')"><i class="gpdot"></i>Lightning</span>
         <span class="gpitem off"><i class="gpdot"></i>AWS</span>
         <span class="gpitem off"><i class="gpdot"></i>Azure</span>
         <span class="gpitem off"><i class="gpdot"></i>GCP</span>
+        <span class="gpitem link {{PILL_CLASS}}" title="Kaggle — open the GPU page" onclick="event.stopPropagation();miShowView('gpu')"><i class="gpdot"></i>Kaggle</span>
+        <span class="gpitem link {{LIGHTNING_STRIP_CLASS}}" onclick="miShowView('lightning')"><i class="gpdot"></i>Lightning</span>
       </div>
       <div class="tip">Kaggle's LED reflects the real live check, same as GPU BACKEND above. Click Kaggle or Lightning to jump to that provider's own page. AWS/Azure/GCP are always off — there's no multi-cloud switching built yet, this is just marking where it would go once that's actually scoped.</div>
     </div>
@@ -2304,11 +2394,16 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
   var buttons = document.querySelectorAll('.rail button.nav');
   var views = document.querySelectorAll('.view');
   function showView(name){
-    var btn = document.querySelector('.rail button.nav[data-view="' + name + '"]');
-    if(!btn) return;
+    // querySelectorAll, not querySelector -- the Providers group added
+    // below lets more than one rail button point at the same view (Kaggle
+    // -> "gpu", Lightning's second entry -> "lightning"), so every button
+    // sharing that data-view needs to light up together, not just the
+    // first match in the DOM.
+    var btns = document.querySelectorAll('.rail button.nav[data-view="' + name + '"]');
+    if(!btns.length) return;
     buttons.forEach(function(x){x.classList.remove('active')});
     views.forEach(function(v){v.classList.remove('active')});
-    btn.classList.add('active');
+    btns.forEach(function(b){b.classList.add('active')});
     var v = document.getElementById(name);
     if(v) v.classList.add('active');
   }
@@ -2397,6 +2492,9 @@ html = html.replace("{{TORCH_VERSION}}", esc(torch_version))
 html = html.replace("{{CUDA_AVAILABLE}}", "True" if online else "False")
 html = html.replace("{{COMPUTE_CAP}}", esc(compute_cap))
 html = html.replace("{{SYNC_HTML}}", sync_html)
+html = html.replace("{{AWS_STATUS_MSG}}", esc(GPU_PROVIDERS["aws"].get_status()[1]))
+html = html.replace("{{AZURE_STATUS_MSG}}", esc(GPU_PROVIDERS["azure"].get_status()[1]))
+html = html.replace("{{GCP_STATUS_MSG}}", esc(GPU_PROVIDERS["gcp"].get_status()[1]))
 html = html.replace("{{GPU_HOURS_USED}}", f"{gpu_hours_used:.1f}")
 html = html.replace("{{GPU_HOURS_BUDGET}}", f"{GPU_HOUR_BUDGET:.1f}")
 html = html.replace("{{GPU_HOURS_PCT}}", str(gpu_hours_pct))
