@@ -251,8 +251,7 @@ def wake_lightning():
         return False, f"Couldn't wake Lightning: {e}"
 
 
-@st.cache_data(ttl=15, show_spinner=False)
-def get_lightning_health(timeout: float = 5.0):
+def _fetch_lightning_health(timeout: float = 5.0):
     """GET the real FastAPI /health on the Studio over Lightning's public
     URL. Returns the parsed JSON dict on a 200, or None if the service
     isn't reachable (Studio asleep/stopped, service still booting, network
@@ -273,12 +272,46 @@ def get_lightning_health(timeout: float = 5.0):
     return None
 
 
+@st.cache_data(ttl=15, show_spinner=False)
+def get_lightning_detail():
+    """One cached round-trip of everything the dashboard needs about the
+    Lightning backend, so the resolver, the sidebar, the top-strip item and
+    the Lightning page never pay for it more than once per ~15s:
+
+      configured  -- both API secrets present
+      health      -- parsed /health dict, or None if the service didn't answer
+      sdk_status  -- 'running'/'stopped'/... from Lightning's own API, or None
+      machine     -- the Studio's REAL machine tier from the SDK
+                     ('CPU'/'T4'/...), or None if it couldn't be read
+      sdk_error   -- the SDK exception text, if the SDK call failed
+
+    Never raises."""
+    d = {"configured": bool(LIGHTNING_API_KEY and LIGHTNING_USER_ID),
+         "health": None, "sdk_status": None, "machine": None, "sdk_error": None}
+    if not d["configured"]:
+        return d
+    d["health"] = _fetch_lightning_health()
+    _lightning_env()
+    try:
+        from lightning_sdk import Studio
+        studio = Studio(LIGHTNING_STUDIO_NAME, teamspace=LIGHTNING_TEAMSPACE, org=LIGHTNING_ORG)
+        d["sdk_status"] = str(studio.status).rsplit(".", 1)[-1].lower()
+        d["machine"] = str(studio.machine).rsplit(".", 1)[-1] if studio.machine else None
+    except Exception as e:
+        d["sdk_error"] = str(e)
+    return d
+
+
+def get_lightning_health():
+    """The parsed /health dict (gpu_available, models_loaded, torch_version)
+    or None. Thin accessor over the cached detail."""
+    return get_lightning_detail().get("health")
+
+
 def get_lightning_status():
-    """Real ground-truth status for the Lightning backend. Primary signal
-    is the service's own /health endpoint (same idea as Kaggle: ask the
-    thing itself, don't guess). If /health doesn't answer, fall back to
-    Lightning's SDK to tell "still booting" from "asleep" from "can't
-    check at all". Returns (status, raw_output):
+    """Real ground-truth status for the Lightning backend, derived from the
+    cached detail (the /health probe first -- ask the thing itself -- then
+    Lightning's own API). Returns (status, raw_output):
 
       running  -- /health answered 200; the service is up and serving
       queued   -- Studio is running but /health hasn't come up yet
@@ -286,35 +319,28 @@ def get_lightning_status():
       unknown  -- the check itself couldn't be completed (no creds, sdk
                   missing, Lightning API unreachable)
     """
-    if not LIGHTNING_API_KEY or not LIGHTNING_USER_ID:
+    d = get_lightning_detail()
+    if not d["configured"]:
         return "unknown", "Lightning API credentials aren't configured."
 
-    health = get_lightning_health()
+    health = d["health"]
     if health is not None:
-        where = "GPU" if health.get("gpu_available") else "CPU"
+        where = d["machine"] or ("GPU" if health.get("gpu_available") else "CPU")
         loaded = health.get("models_loaded") or []
         return "running", (
             f"/health 200 — service up on {where}; "
             f"torch={health.get('torch_version')}; models_loaded={loaded}"
         )
 
-    # /health silent -- ask the platform whether the box is even on.
-    _lightning_env()
-    try:
-        from lightning_sdk import Studio
-    except Exception as e:
-        return "unknown", f"/health unreachable and lightning-sdk isn't installed: {e}"
-    try:
-        studio = Studio(LIGHTNING_STUDIO_NAME, teamspace=LIGHTNING_TEAMSPACE, org=LIGHTNING_ORG)
-        raw = str(studio.status).rsplit(".", 1)[-1].lower()
-        if raw == "running":
-            return "queued", (
-                f"Studio is running (machine={studio.machine}) but /health "
-                "hasn't come up yet — service still starting."
-            )
-        return "stopped", f"Studio status={raw}; /health not reachable."
-    except Exception as e:
-        return "unknown", f"/health unreachable and Lightning's API check failed: {e}"
+    sdk_status = d["sdk_status"]
+    if sdk_status is None:
+        return "unknown", f"/health unreachable and Lightning's API check failed: {d['sdk_error']}"
+    if sdk_status == "running":
+        return "queued", (
+            f"Studio is running (machine={d['machine']}) but /health "
+            "hasn't come up yet — service still starting."
+        )
+    return "stopped", f"Studio status={sdk_status}; /health not reachable."
 
 ACTIVITY_TOUCH_CODE = (
     "import time as _t, os as _o\n"
@@ -984,6 +1010,31 @@ def esc(text: str) -> str:
     return (text or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+# --- Reusable hardware status chips ----------------------------------------
+# A provider-agnostic building block: one chip per physical compute tier a
+# provider offers, each showing its own live ONLINE / OFFLINE state. Wired up
+# for Lightning (CPU vs GPU (T4)) now; ready to reuse for Kaggle's T4x2 and
+# for Azure / AWS / GCP once those are real backends -- pass whatever
+# (label, state) pairs a provider has, this doesn't know about any of them.
+_HW_CHIP_WORD = {"online": "ONLINE", "offline": "OFFLINE", "unknown": "—"}
+
+
+def hw_status_chip(label: str, state: str) -> str:
+    """One hardware status chip. state: 'online' | 'offline' | 'unknown'
+    (anything else is treated as 'unknown'). Returns an HTML string."""
+    state = state if state in _HW_CHIP_WORD else "unknown"
+    return (
+        f'<span class="hwchip hw-{state}"><i class="hwdot"></i>'
+        f'<span class="hwlbl">{esc(label)}</span>'
+        f'<b class="hwstate">{_HW_CHIP_WORD[state]}</b></span>'
+    )
+
+
+def hw_status_row(chips) -> str:
+    """A row of hw_status_chip()s. `chips` is an iterable of (label, state)."""
+    return '<div class="hwrow">' + "".join(hw_status_chip(l, s) for l, s in chips) + "</div>"
+
+
 connected = bool(jupyter_url and jupyter_token)
 
 # --- Not connected yet: a plain, honest connect form (same as v2). ----------
@@ -1209,23 +1260,43 @@ provider_status_title = (
 )
 
 # --- Lightning detail: values for the dedicated Lightning view and its top-
-# strip pill. provider_statuses already holds ("running"/"queued"/"stopped"/
-# "unknown", raw) from the resolver's one call per load; get_lightning_health()
-# is cached (ttl=15s) so re-reading it here for the machine-tier detail costs
-# nothing extra.
+# strip item. All of it comes from get_lightning_detail() -- the same cached
+# (ttl=15s) check the resolver already ran this load: the /health probe plus
+# the SDK's real machine tier. Nothing here guesses or infers the tier.
 _lightning_provider = GPU_PROVIDERS["lightning"]
-lightning_configured = _lightning_provider.is_configured()
+_lightning_detail = get_lightning_detail()
+lightning_configured = _lightning_detail["configured"]
 lightning_status, lightning_status_raw = provider_statuses.get(
     "lightning",
     ("unknown", "Lightning API credentials aren't configured." if not lightning_configured else ""),
 )
-lightning_health = _lightning_provider.get_health() if lightning_configured else None
+lightning_health = _lightning_detail["health"]
+lightning_machine = _lightning_detail["machine"]  # 'CPU' / 'T4' / ... / None, from the SDK
 
-if lightning_health is not None:
-    if lightning_health.get("gpu_available"):
-        lightning_tier = lightning_health.get("device_name") or "GPU"
-    else:
-        lightning_tier = "CPU"
+# Hardware chips: one live ONLINE/OFFLINE per compute tier the Studio can run
+# on. The SDK's real machine tier is ground truth; /health's gpu_available is
+# the fallback only if the SDK read failed while the service is up. Studio
+# asleep -> both OFFLINE (never one wrongly ON).
+_studio_awake = _lightning_detail["sdk_status"] == "running" or lightning_health is not None
+if not lightning_configured:
+    _cpu_state, _gpu_state = "unknown", "unknown"
+elif not _studio_awake:
+    _cpu_state, _gpu_state = "offline", "offline"
+elif lightning_machine:
+    _on_cpu = lightning_machine.upper().startswith("CPU")
+    _cpu_state, _gpu_state = ("online", "offline") if _on_cpu else ("offline", "online")
+elif lightning_health is not None:
+    _on_gpu = bool(lightning_health.get("gpu_available"))
+    _cpu_state, _gpu_state = ("offline", "online") if _on_gpu else ("online", "offline")
+else:
+    _cpu_state, _gpu_state = "unknown", "unknown"
+lightning_hw_row = hw_status_row([("CPU", _cpu_state), ("GPU (T4)", _gpu_state)])
+
+# Short tier label still used in the connection sentence below.
+if lightning_machine:
+    lightning_tier = lightning_machine
+elif lightning_health is not None:
+    lightning_tier = "GPU" if lightning_health.get("gpu_available") else "CPU"
 elif lightning_status == "queued":
     lightning_tier = "starting…"
 elif not lightning_configured:
@@ -1545,6 +1616,17 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
 .gpitem.on .gpdot{background:var(--st-good);opacity:1;box-shadow:0 0 6px rgba(47,179,86,.6)}
 .gpitem.warn .gpdot{background:var(--st-warn);opacity:1}
 .gpitem.link{cursor:pointer}.gpitem.link:hover{color:var(--nv-hi)}
+.hwrow{display:flex;flex-wrap:wrap;gap:10px;margin:4px 0}
+.hwchip{display:inline-flex;align-items:center;gap:9px;padding:10px 14px;border:1px solid var(--line);border-radius:11px;background:var(--panel);font-family:var(--mono);font-size:11px}
+.hwchip .hwdot{width:9px;height:9px;border-radius:50%;border:1.5px solid var(--faint);background:transparent;flex:none}
+.hwchip .hwlbl{color:var(--muted);letter-spacing:.03em}
+.hwchip .hwstate{font-size:10px;letter-spacing:.09em;color:var(--faint)}
+.hwchip.hw-online{border-color:rgba(47,179,86,.4)}
+.hwchip.hw-online .hwdot{background:var(--st-good);border-color:var(--st-good);box-shadow:0 0 7px rgba(47,179,86,.55)}
+.hwchip.hw-online .hwstate{color:var(--st-good)}
+.hwchip.hw-online .hwlbl{color:var(--ink)}
+.hwchip.hw-offline{opacity:.62}
+.hwchip.hw-unknown{opacity:.62}
 .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(14px);background:var(--raised);
   border:1px solid var(--line);color:var(--ink);font-size:12.5px;padding:12px 18px;border-radius:11px;
   box-shadow:0 16px 40px -10px rgba(0,0,0,.5);opacity:0;pointer-events:none;transition:opacity .25s,transform .25s;
@@ -1924,9 +2006,10 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
     <div class="group-title"><span class="bar"></span><h3>Connection</h3><span class="note">live, checked on this page load</span></div>
     <div class="kpi">
       <div class="kbox"><div class="n {{LIGHTNING_KPI_CLASS}}">{{LIGHTNING_STATUS_WORD}}</div><div class="l">Service /health</div></div>
-      <div class="kbox"><div class="n b">{{LIGHTNING_TIER}}</div><div class="l">Studio machine tier</div></div>
       <div class="kbox"><div class="n mu">{{LIGHTNING_STUDIO_NAME}}</div><div class="l">Studio</div></div>
     </div>
+    <div class="group-title" style="margin-top:18px"><span class="bar"></span><h3>Hardware</h3><span class="note">real machine tier — only one is ever online</span></div>
+    {{LIGHTNING_HW_ROW}}
     <div class="card" style="max-width:640px;margin-top:14px">
       <div class="head"><div><div class="t">What's connected</div></div>
         <span class="pill {{LIGHTNING_STRIP_CLASS}}"><span class="dot"></span>{{LIGHTNING_STATUS_WORD}}</span></div>
@@ -2158,7 +2241,7 @@ html = html.replace("{{CHROME_BTN_LABEL}}", "Hide Streamlit Cloud toolbar & foot
 html = html.replace("{{LIGHTNING_STRIP_CLASS}}", lightning_strip_class)
 html = html.replace("{{LIGHTNING_KPI_CLASS}}", lightning_kpi_class)
 html = html.replace("{{LIGHTNING_STATUS_WORD}}", esc(lightning_status_word))
-html = html.replace("{{LIGHTNING_TIER}}", esc(lightning_tier))
+html = html.replace("{{LIGHTNING_HW_ROW}}", lightning_hw_row)
 html = html.replace("{{LIGHTNING_STUDIO_NAME}}", esc(LIGHTNING_STUDIO_NAME))
 html = html.replace("{{LIGHTNING_SERVICE_URL}}", esc(LIGHTNING_SERVICE_URL))
 html = html.replace("{{LIGHTNING_CONN_LINE}}", lightning_conn_line)
