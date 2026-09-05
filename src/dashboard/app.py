@@ -1619,6 +1619,36 @@ if kaggle_gpu_note == "out of GPU quota":
 else:
     kaggle_hw_note_html = ""
 
+# --- Grafana Cloud embed (GPU tab) -- gated on a secret so this ships now
+# and lights up the moment the Grafana dashboard's "Public dashboard" toggle
+# is turned on and the URL is dropped into secrets.toml. Until then it
+# explains what's missing instead of showing a broken iframe.
+_grafana_dashboard_url = get_secret("GRAFANA_DASHBOARD_URL", "")
+if _grafana_dashboard_url:
+    grafana_embed_html = (
+        '<div class="group">'
+        '<div class="group-title"><span class="bar"></span><h3>Live Grafana dashboard</h3>'
+        '<span class="note">NVIDIA DCGM Exporter Dashboard \u2014 embedded</span></div>'
+        f'<iframe src="{esc(_grafana_dashboard_url)}" width="100%" height="900" '
+        'style="border:none;border-radius:10px" loading="lazy" '
+        'title="Grafana NVIDIA DCGM Exporter Dashboard"></iframe>'
+        '</div>'
+    )
+else:
+    grafana_embed_html = (
+        '<div class="group">'
+        '<div class="group-title"><span class="bar"></span><h3>Live Grafana dashboard</h3>'
+        '<span class="note">not yet configured</span></div>'
+        '<div class="tip">Not embedded yet \u2014 turn on this dashboard&rsquo;s '
+        '&ldquo;Public dashboard&rdquo; sharing toggle in Grafana Cloud, then add its URL as '
+        '<span class="mono">GRAFANA_DASHBOARD_URL</span> in secrets.toml. The Kaggle '
+        'kernel&rsquo;s telemetry collector is already reading DCGM-named fields via '
+        '<span class="mono">pynvml</span>; once real Grafana Cloud push credentials '
+        '(remote_write or OTLP) are wired into it, this panel will show live data '
+        'instead of this notice.</div>'
+        '</div>'
+    )
+
 HTML_TEMPLATE = r"""
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -2072,6 +2102,8 @@ figcaption{font-family:var(--mono);font-size:10.5px;color:var(--faint);padding:1
     </div>
   </div>
 
+  {{GRAFANA_EMBED_HTML}}
+
   <div class="tip warn"><b>GPU-hour discipline —</b> reading these fields is essentially instant and costs nothing meaningful; what actually burns the 30 hr/week Kaggle budget is running compute (benchmarks, model inference). So telemetry gets captured around real workloads — never a background daemon polling continuously just to keep a chart moving.</div>
 
   <div class="group">
@@ -2495,6 +2527,7 @@ html = html.replace("{{SYNC_HTML}}", sync_html)
 html = html.replace("{{AWS_STATUS_MSG}}", esc(GPU_PROVIDERS["aws"].get_status()[1]))
 html = html.replace("{{AZURE_STATUS_MSG}}", esc(GPU_PROVIDERS["azure"].get_status()[1]))
 html = html.replace("{{GCP_STATUS_MSG}}", esc(GPU_PROVIDERS["gcp"].get_status()[1]))
+html = html.replace("{{GRAFANA_EMBED_HTML}}", grafana_embed_html)
 html = html.replace("{{GPU_HOURS_USED}}", f"{gpu_hours_used:.1f}")
 html = html.replace("{{GPU_HOURS_BUDGET}}", f"{GPU_HOUR_BUDGET:.1f}")
 html = html.replace("{{GPU_HOURS_PCT}}", str(gpu_hours_pct))
